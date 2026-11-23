@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "PSA-OBD2-Tani"
+rootProject.name = "Rotiva"
 include(":app")

@@ -61,8 +61,8 @@ class ValuePickerDialog(QDialog):
 
 def show_about(parent):
     QMessageBox.about(parent, "Hakkında",
-                      f"<h2>{APP_NAME}</h2><p>Sürüm {APP_VERSION}</p><p>{APP_VEHICLE} için ELM327 tabanlı "
-                      "OBD2 tanı yazılımı.</p><p>Yasal uyarı: Bu yazılım bilgilendirme amaçlıdır; "
+                      f"<h2>{APP_NAME}</h2><p>Sürüm {APP_VERSION}</p><p>Açık kaynak OBD2 sürüş analizi ve araç tanı uygulaması (ELM327). "
+                      f"Test edilen araç: {APP_VEHICLE}.</p><p>Yasal uyarı: Bu yazılım bilgilendirme amaçlıdır; "
                       "araç üzerinde yapılan işlemlerin sorumluluğu kullanıcıya aittir. Motor çalışırken "
                       "veya araç hareket halindeyken tanı işlemi yapmayın.</p>")
 

@@ -1,4 +1,4 @@
-"""OBD2 Tanı Pro - giriş noktası."""
+"""Rotiva - giriş noktası."""
 import sys
 
 from PySide6.QtWidgets import QApplication

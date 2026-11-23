@@ -1,4 +1,4 @@
-"""Kalıcı kullanıcı ayarları (%APPDATA%\\OBDTani\\settings.json): Panom seçimi, bağlantı tercihleri."""
+"""Kalıcı kullanıcı ayarları (%APPDATA%\\Rotiva\\settings.json): Panom seçimi, bağlantı tercihleri."""
 from __future__ import annotations
 
 import json
@@ -6,9 +6,8 @@ import os
 
 
 def settings_path() -> str:
-    d = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "OBDTani")
-    os.makedirs(d, exist_ok=True)
-    return os.path.join(d, "settings.json")
+    from .paths import data_dir
+    return os.path.join(data_dir(), "settings.json")
 
 
 DEFAULTS = {"dashboard": ["rpm", "speed", "coolant", "load", "frp", "atrv"], "conn": {}, "theme": "Gece Mavisi"}

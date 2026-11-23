@@ -5,15 +5,15 @@ plugins {
 }
 
 android {
-    namespace = "com.ta2fga.obd2"
+    namespace = "com.ta2fga.rotiva"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.ta2fga.obd2"
+        applicationId = "com.ta2fga.rotiva"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.1.1"
     }
 
     buildTypes {

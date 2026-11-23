@@ -44,16 +44,16 @@ jobs:
       - name: APK adını hazırla
         run: |
           mkdir -p dist
-          cp app/build/outputs/apk/debug/app-debug.apk dist/PSA-OBD2-Tani-debug.apk
+          cp app/build/outputs/apk/debug/app-debug.apk dist/Rotiva-debug.apk
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            cp app/build/outputs/apk/debug/app-debug.apk "dist/PSA-OBD2-Tani-${GITHUB_REF_NAME}.apk"
+            cp app/build/outputs/apk/debug/app-debug.apk "dist/Rotiva-${GITHUB_REF_NAME}.apk"
           fi
 
       - name: APK'yı artifact olarak yükle
         uses: actions/upload-artifact@v4
         with:
-          name: PSA-OBD2-Tani-debug
-          path: android/dist/PSA-OBD2-Tani-debug.apk
+          name: Rotiva-debug
+          path: android/dist/Rotiva-debug.apk
           if-no-files-found: error
 
       - name: Test raporu
@@ -69,7 +69,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cat > notes.md <<EOF
-          ## PSA OBD2 Tanı - Android ${GITHUB_REF_NAME}
+          ## Rotiva - Android ${GITHUB_REF_NAME}
 
           Masaüstü uygulamanın Android sürümü (Kotlin + Jetpack Compose).
 
@@ -87,5 +87,5 @@ jobs:
 
           Not: Bu APK debug anahtarıyla imzalıdır; Play Store sürümü değildir.
           EOF
-          gh release create "${GITHUB_REF_NAME}" "dist/PSA-OBD2-Tani-${GITHUB_REF_NAME}.apk" \
-            --title "PSA OBD2 Tanı Android ${GITHUB_REF_NAME}" --notes-file notes.md --verify-tag
+          gh release create "${GITHUB_REF_NAME}" "dist/Rotiva-${GITHUB_REF_NAME}.apk" \
+            --title "Rotiva Android ${GITHUB_REF_NAME}" --notes-file notes.md --verify-tag

@@ -1,6 +1,10 @@
-# OBD2 Tanı Pro
+<p align="center"><img src="assets/icon-512.png" width="128" alt="Rotiva simgesi"></p>
 
-Citroën C-Elysée 2017 1.6 HDi (PSA) için ELM327 tabanlı Windows OBD2 tanı uygulaması. Arayüz Türkçedir.
+# Rotiva
+
+**Açık kaynak OBD2 sürüş analizi ve araç tanı uygulaması.**
+
+ELM327 tabanlı Windows ve Android OBD2 uygulaması. Test edilen araç: Citroën C-Elysée 2017 1.6 HDi (PSA desteği: PSA'ya özel ECU verileri veri dosyalarında). Arayüz Türkçedir.
 
 ## Kurulum
 
@@ -9,19 +13,19 @@ pip install -r requirements.txt
 python main.py
 ```
 
-Gereksinimler: Python 3.10+, PySide6, pyserial, bleak (Bluetooth LE). Çalıştırılabilir dosya üretmek için `build.bat` (PyInstaller, tek dosya, pencereli) -> `dist\OBD2TaniPro.exe`.
+Gereksinimler: Python 3.10+, PySide6, pyserial, bleak (Bluetooth LE). Çalıştırılabilir dosya üretmek için `build.bat` (PyInstaller, tek dosya, pencereli) -> `dist\Rotiva.exe`.
 
 ## Kullanım
 
 | Sayfa | Açıklama |
 |---|---|
 | Bağlantı | COM/Bluetooth (port + baud), Bluetooth LE (Tara), WiFi (varsayılan 192.168.0.10:35000) veya Demo / Simülatör |
-| Panom | Seçtiğiniz değerler büyük kartlarda (yeşil/sarı/kırmızı durum). "Değer seç / ekle" ile aranabilir liste; seçim `%APPDATA%\OBDTani\settings.json` içinde saklanır |
+| Panom | Seçtiğiniz değerler büyük kartlarda (yeşil/sarı/kırmızı durum). "Değer seç / ekle" ile aranabilir liste; seçim `%APPDATA%\Rotiva\settings.json` içinde saklanır |
 | Tüm Değerler | Tüm standart PID ve PSA değerleri, kategori/arama; ★ ile Panom'a ekleyin. Araç desteklemeyenler gri "desteklenmiyor" |
 | Canlı Grafik | Seçilen değerlerin zaman grafiği |
 | Arıza Kodları | Mod 03/07/0A okuma, Mod 04 silme (onaylı), üretici ECU'larından UDS 19 02 FF |
 | PSA Özel | `data/psa_data.json` içindeki DID'ler (servis 22 / KWP 21). Düşük güvenli kayıtlar "doğrulanmamış" etiketlidir |
-| Keşif / ECU | ECU adres taraması (10 03 / 10 C0 / 3E 00), servis 21/22 kimlik taraması, bulunanı ad/formül/birimle `%APPDATA%\OBDTani\user_dids.json` dosyasına kaydetme |
+| Keşif / ECU | ECU adres taraması (10 03 / 10 C0 / 3E 00), servis 21/22 kimlik taraması, bulunanı ad/formül/birimle `%APPDATA%\Rotiva\user_dids.json` dosyasına kaydetme |
 | Araç Bilgisi | CALID, ELM sürümü, protokol, voltaj; ECU VIN vermezse elle VIN girişi |
 | Kayıt | Seçili değerleri CSV (Excel uyumlu) olarak kaydetme |
 | Rapor | Arıza kodları + anlık değerler: HTML / PDF |
@@ -60,7 +64,7 @@ Durum renkleri (normal/uyarı/kritik) her temada okunaklı kalacak şekilde ayr�
 
 > **Güvenlik uyarısı:** Sürüş sırasında uygulamayı elle kullanmayın. Bağlantıyı ve kaydı park halindeyken başlatın; yalnızca büyük, etkileşimsiz **Sürüş modu** ekranına bakın (hız, devir, tahmini vites, canlı puan). Dikkatiniz her zaman yolda olmalıdır.
 
-- **Kayıt:** Her döngüde devir ve hız (>= 3 Hz hedefi), daha seyrek olarak yük, soğutma suyu, MAP ve MAF okunur; her örnek zaman damgalıdır. Veriler `%APPDATA%\OBDTani	rips\` altına CSV + JSON özet olarak yazılır.
+- **Kayıt:** Her döngüde devir ve hız (>= 3 Hz hedefi), daha seyrek olarak yük, soğutma suyu, MAP ve MAF okunur; her örnek zaman damgalıdır. Veriler `%APPDATA%\Rotiva	rips\` altına CSV + JSON özet olarak yazılır.
 - **Başlatma / bitirme:** Hız 5 km/s'yi aşınca otomatik başlar (Sürüş sayfasından kapatılabilir, varsayılan açık). Sürüş **yalnızca "Sürüşü bitir" ile** sona erer; ışıkta/trafikte duruşlar aynı sürüşte rölanti sayılır.
 - **Bağlantı kopması:** Kayıt duraklar, "Bağlantı koptu – yeniden bağlanılıyor" gösterilir ve adaptöre otomatik yeniden bağlanılır; bağlanınca aynı sürüşe devam edilir.
 - **Çökme koruması:** Sürüş her 30 sn'de kısmen kaydedilir. Uygulama beklenmedik kapanırsa bir sonraki açılışta yarım kalan sürüşe devam edebilir, bitirip kaydedebilir veya silebilirsiniz.
@@ -74,7 +78,7 @@ Durum renkleri (normal/uyarı/kritik) her temada okunaklı kalacak şekilde ayr�
 `android/` klasöründe masaüstü uygulamanın yerel Android sürümü (Kotlin + Jetpack Compose, Material 3) bulunur. ELM327, vites tahmini, puanlama ve koçluk mantığı masaüstünden taşınmıştır; üzerine GPS/barometre/ivmeölçer ile yükseklik, eğim ve viraj analizi eklenmiştir. Arayüz Türkçedir.
 
 ### Kurulum (APK yükleme)
-1. [Releases](https://github.com/ta2fga/psa-obd2-tani/releases) sayfasından en son `PSA-OBD2-Tani-vX.Y.Z.apk` dosyasını telefona indirin (ya da Actions sekmesindeki `PSA-OBD2-Tani-debug` artifact'ını kullanın).
+1. [Releases](https://github.com/ta2fga/rotiva/releases) sayfasından en son `Rotiva-vX.Y.Z.apk` dosyasını telefona indirin (ya da Actions sekmesindeki `Rotiva-debug` artifact'ını kullanın).
 2. Telefonda "Bilinmeyen kaynaklardan yüklemeye izin ver" ayarını açıp APK'yı yükleyin (Android 8.0 / API 26 ve üstü).
 3. Kendiniz derlemek için: `cd android && ./gradlew testDebugUnitTest assembleDebug` (JDK 17+, Android SDK 36). APK: `android/app/build/outputs/apk/debug/app-debug.apk`.
 
@@ -102,7 +106,7 @@ Durum renkleri (normal/uyarı/kritik) her temada okunaklı kalacak şekilde ayr�
 - Puanlama: masaüstü kuralları + eğim bağlamı (dik yokuşta sert hızlanma daha az cezalı; yokuşta düşük devir; uzun inişte sürekli fren, motor freni önerisi), ivmeölçerle doğrulanan sert hızlanma/frenleme ve 0,35 g üstü sert viraj.
 
 ### Sürüm yayınlama
-`main`'e her push'ta GitHub Actions testleri çalıştırır ve debug APK'yı artifact olarak yükler. `v*` etiketi (ör. `v1.0.0`) itildiğinde aynı APK `PSA-OBD2-Tani-<etiket>.apk` adıyla GitHub Release'e eklenir (debug anahtarıyla imzalı).
+`main`'e her push'ta GitHub Actions testleri çalıştırır ve debug APK'yı artifact olarak yükler. `v*` etiketi (ör. `v1.0.0`) itildiğinde aynı APK `Rotiva-<etiket>.apk` adıyla GitHub Release'e eklenir (debug anahtarıyla imzalı).
 
 ## Lisans
 

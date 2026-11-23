@@ -9,14 +9,14 @@ if not exist assets\app.ico python tools\make_icon.py
 echo [3/4] Testler calistiriliyor...
 python tests\test_smoke.py || goto :err
 echo [4/4] PyInstaller...
-python -m PyInstaller --noconfirm --clean --onefile --windowed --name OBD2TaniPro ^
+python -m PyInstaller --noconfirm --clean --onefile --windowed --name Rotiva ^
   --icon assets\app.ico ^
   --add-data "data;data" ^
   --hidden-import bleak.backends.winrt.client --hidden-import bleak.backends.winrt.scanner ^
   --collect-submodules bleak ^
   main.py || goto :err
 echo.
-echo Tamam: dist\OBD2TaniPro.exe
+echo Tamam: dist\Rotiva.exe
 exit /b 0
 :err
 echo HATA olustu.

@@ -1,1 +1,1 @@
-Derlenen APK buraya kopyalanir (PSA-OBD2-Tani-debug.apk); *.apk git'e eklenmez.
+Derlenen APK buraya kopyalanir (Rotiva-debug.apk); *.apk git'e eklenmez.

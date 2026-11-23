@@ -6,7 +6,7 @@ from PySide6.QtGui import QPixmap, QPainter, QColor, QIcon
 from PySide6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QListWidget, QListWidgetItem,
                                QStackedWidget, QLabel, QPushButton, QMessageBox, QComboBox, QApplication)
 
-from .. import APP_NAME, APP_VERSION
+from .. import APP_NAME, APP_SUBTITLE, APP_VERSION
 from ..state import AppState
 from . import theme
 from .dialogs import show_about
@@ -45,7 +45,7 @@ class MainWindow(QMainWindow):
         b = QLabel(APP_NAME)
         b.setObjectName("brand")
         sl.addWidget(b)
-        sub = QLabel("C-Elysée 1.6 HDi")
+        sub = QLabel(APP_SUBTITLE)
         sub.setObjectName("brandSub")
         sl.addWidget(sub)
         self.nav = QListWidget()

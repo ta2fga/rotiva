@@ -28,9 +28,8 @@ def _load(name: str):
 
 
 def user_file() -> str:
-    d = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "OBDTani")
-    os.makedirs(d, exist_ok=True)
-    return os.path.join(d, "user_dids.json")
+    from .paths import data_dir
+    return os.path.join(data_dir(), "user_dids.json")
 
 
 def _load_user() -> dict:

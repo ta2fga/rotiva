@@ -26,7 +26,8 @@ UNF = "unfinished"
 
 
 def trips_dir(base: str = None) -> str:
-    d = base or os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "OBDTani", "trips")
+    from .paths import data_dir
+    d = base or os.path.join(data_dir(), "trips")
     os.makedirs(d, exist_ok=True)
     return d
 

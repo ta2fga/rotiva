@@ -1,28 +1,50 @@
-"""Kod ile üretilen uygulama simgesi."""
+"""Rotiva simgesi: tek geometriden (aşağıdaki sabitler) üretilir - masaüstü .ico/.png, SVG ve Android vektörleri.
+
+Işaret: kalın bir "R"; bacağı kıvrımlı bir yola dönüşür ve konum noktasında biter; arkada belli belirsiz bir yükseklik profili.
+"""
 from PySide6.QtCore import Qt, QRectF, QBuffer, QByteArray
-from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QIcon, QBrush, QFont
+from PySide6.QtGui import QPixmap, QPainter, QIcon
+
+# 108x108 uzayı (Android adaptif simge ızgarası); işaret 66x66 güvenli bölgede (21..87)
+STEM = "M36,29 V81"
+BOWL = "M36,29 H54 A12.5,12.5 0 0 1 54,54 H36"
+LEG = "M47,54 C60,59 62,67 52,72 C44,77 55,84 71,80"
+RIDGE = "M21,87 L21,77 C33,70 40,81 52,75 S74,66 87,72 L87,87 Z"
+DOT = (79.0, 79.0, 5.5)
+STROKE_W = 9
+BG1, BG2 = "#0B1220", "#111C33"
+ACC1, ACC2 = "#3B82F6", "#22D3EE"
+WARM = "#F97316"
+
+
+def icon_svg(rounded: bool = True, scale: float = 1.3) -> str:
+    """Tam simge SVG'si (masaüstü/README). scale: işaretin büyütülmesi (Android'de 1.0 = güvenli bölge)."""
+    rx = 24 if rounded else 0
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="108" y2="108">
+      <stop offset="0" stop-color="{BG1}"/><stop offset="1" stop-color="{BG2}"/></linearGradient>
+    <linearGradient id="m" gradientUnits="userSpaceOnUse" x1="21" y1="21" x2="87" y2="87">
+      <stop offset="0" stop-color="{ACC1}"/><stop offset="1" stop-color="{ACC2}"/></linearGradient>
+    <clipPath id="c"><rect width="108" height="108" rx="{rx}"/></clipPath>
+  </defs>
+  <rect width="108" height="108" rx="{rx}" fill="url(#bg)"/>
+  <g clip-path="url(#c)"><path transform="translate(54 54) scale({scale}) translate(-54 -54)" d="{RIDGE}" fill="url(#m)" fill-opacity="0.22"/></g>
+  <g transform="translate(54 54) scale({scale}) translate(-54 -54)">
+    <path d="{STEM} {BOWL} {LEG}" fill="none" stroke="url(#m)" stroke-width="{STROKE_W}" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="{DOT[0]}" cy="{DOT[1]}" r="{DOT[2]}" fill="{WARM}"/>
+  </g>
+</svg>
+"""
 
 
 def make_pixmap(size: int = 256) -> QPixmap:
+    from PySide6.QtSvg import QSvgRenderer
     pm = QPixmap(size, size)
     pm.fill(Qt.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.Antialiasing)
-    s = size
-    p.setBrush(QBrush(QColor("#1b232d")))
-    p.setPen(Qt.NoPen)
-    p.drawRoundedRect(QRectF(0, 0, s, s), s * 0.22, s * 0.22)
-    pen = QPen(QColor("#3b82f6"), s * 0.09, Qt.SolidLine, Qt.RoundCap)
-    p.setPen(pen)
-    r = QRectF(s * 0.18, s * 0.18, s * 0.64, s * 0.64)
-    p.drawArc(r, 210 * 16, -240 * 16)
-    p.setPen(QPen(QColor("#22c55e"), s * 0.07, Qt.SolidLine, Qt.RoundCap))
-    p.drawLine(int(s * 0.5), int(s * 0.5), int(s * 0.68), int(s * 0.34))
-    p.setPen(QColor("#e6ebf2"))
-    f = QFont("Segoe UI", max(6, int(s * 0.12)))
-    f.setBold(True)
-    p.setFont(f)
-    p.drawText(QRectF(0, s * 0.58, s, s * 0.25), Qt.AlignCenter, "OBD")
+    QSvgRenderer(QByteArray(icon_svg().encode("utf-8"))).render(p, QRectF(0, 0, size, size))
     p.end()
     return pm
 
