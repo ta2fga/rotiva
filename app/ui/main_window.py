@@ -14,6 +14,7 @@ from .widgets import ValueCard
 from .icon import app_icon
 from .page_connection import ConnectionPage
 from .page_dtc import DtcPage
+from .page_drive import DrivePage
 from .page_misc import VehiclePage, LogPage, ReportPage
 from .page_psa import PsaPage
 from .page_scanner import ScannerPage
@@ -77,7 +78,7 @@ class MainWindow(QMainWindow):
 
         s = self.state
         pages = [("🔌", "Bağlantı", ConnectionPage), ("📊", "Panom", DashboardPage),
-                 ("📋", "Tüm Değerler", AllValuesPage), ("📈", "Canlı Grafik", LivePage),
+                 ("📋", "Tüm Değerler", AllValuesPage), ("📈", "Canlı Grafik", LivePage), ("🛣", "Sürüş", DrivePage),
                  ("⚠", "Arıza Kodları", DtcPage), ("🔧", "PSA Özel", PsaPage),
                  ("🧭", "Keşif / ECU", ScannerPage), ("🚗", "Araç Bilgisi", VehiclePage),
                  ("💾", "Kayıt", LogPage), ("📄", "Rapor", ReportPage)]
@@ -132,6 +133,8 @@ class MainWindow(QMainWindow):
                 pg.banner.setStyleSheet(theme.banner_style("warn"))
             for c in pg.findChildren(ValueCard):
                 c.restyle()
+            if hasattr(pg, "restyle"):
+                pg.restyle()
             pg.update()
             for ch in pg.findChildren(QWidget):
                 if ch.__class__.__name__ == "LineChart":
@@ -140,7 +143,7 @@ class MainWindow(QMainWindow):
 
     def _conn(self, ok):
         self._conn_refresh()
-        if ok:
+        if ok and not self.state.reconnecting:
             self.nav.setCurrentRow(1)
 
     def _conn_refresh(self):
@@ -154,6 +157,7 @@ class MainWindow(QMainWindow):
             self.dot.setStyleSheet(f"color:{theme.MUTED};")
 
     def closeEvent(self, e):
+        self.state.trip.shutdown()
         if self.state.connected:
             self.state.disconnect()
         super().closeEvent(e)

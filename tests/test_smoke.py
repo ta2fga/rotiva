@@ -5,6 +5,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ["APPDATA"] = tempfile.mkdtemp()   # kullanıcı dosyalarını izole et
 
 from app.datafile import DataStore, save_user_did          # noqa: E402
@@ -132,6 +133,8 @@ class SafeEvalTest(unittest.TestCase):
                 compile_formula(bad)(bytes([2]))
 
 
+
+from test_trip import GearTest, ScoringTest, TripTest      # noqa: E402,F401  (sürüş kaydı birim testleri)
 
 
 if __name__ == "__main__":

@@ -54,6 +54,21 @@ Kenar çubuğunun altındaki **Tema** listesinden (renk örnekli) tema seçilir;
 
 Durum renkleri (normal/uyarı/kritik) her temada okunaklı kalacak şekilde ayrı ayarlanmıştır. Yeni tema eklemek için `app/ui/theme.py` içindeki `PALETTES` sözlüğüne bir palet eklemek yeterlidir.
 
+## Sürüş kaydı ve puanlama
+
+**Sürüş** sayfası yolculuklarınızı kaydeder, 0-100 arası puanlar ve Türkçe koçluk ipuçları verir.
+
+> **Güvenlik uyarısı:** Sürüş sırasında uygulamayı elle kullanmayın. Bağlantıyı ve kaydı park halindeyken başlatın; yalnızca büyük, etkileşimsiz **Sürüş modu** ekranına bakın (hız, devir, tahmini vites, canlı puan). Dikkatiniz her zaman yolda olmalıdır.
+
+- **Kayıt:** Her döngüde devir ve hız (>= 3 Hz hedefi), daha seyrek olarak yük, soğutma suyu, MAP ve MAF okunur; her örnek zaman damgalıdır. Veriler `%APPDATA%\OBDTani	rips\` altına CSV + JSON özet olarak yazılır.
+- **Başlatma / bitirme:** Hız 5 km/s'yi aşınca otomatik başlar (Sürüş sayfasından kapatılabilir, varsayılan açık). Sürüş **yalnızca "Sürüşü bitir" ile** sona erer; ışıkta/trafikte duruşlar aynı sürüşte rölanti sayılır.
+- **Bağlantı kopması:** Kayıt duraklar, "Bağlantı koptu – yeniden bağlanılıyor" gösterilir ve adaptöre otomatik yeniden bağlanılır; bağlanınca aynı sürüşe devam edilir.
+- **Çökme koruması:** Sürüş her 30 sn'de kısmen kaydedilir. Uygulama beklenmedik kapanırsa bir sonraki açılışta yarım kalan sürüşe devam edebilir, bitirip kaydedebilir veya silebilirsiniz.
+- **Vites tahmini:** ECU vites bilgisi vermez; oran = hız / (devir/1000) değerinden 5 kümeyle (çevrimiçi k-means) tahmin edilir. Başlangıç oranları (8, 15, 22.5, 30, 38 km/s per 1000 d/dk) **tahmindir**; stabil örneklerle otomatik düzelir ve `settings.json` içinde saklanır. Kavrama/boşta/rölantide vites "-" görünür.
+- **Puan:** Hızlanma, Frenleme, Vites kullanımı/devir, Rölanti, Soğuk motor, Hız istikrarı/Eko alt puanlarının ağırlıklı ortalamasıdır. Olaylar: sert hızlanma (> 2.5 m/s²), sert frenleme (< -3.0 m/s²), 3500 d/dk üstü, düşük devirde zorlanma (< 1300 d/dk, 3. vites üstü, yük > %70), geç/erken vites büyütme (dizel için ideal 2000-2500 d/dk), soğuk motora yüklenme, 2 dk üstü rölanti, otoyolda dengesiz hız. Cezalar km başına normalize edilir; tüm eşikler `app/scoring.py` içindeki `CONFIG` sözlüğündedir.
+- **Ayrıntı ve rapor:** Sürüş listesinden bir kayıt seçince puan dağılımı, ipuçları, hız/devir/vites grafiği (olay işaretli) görünür; **HTML rapor** olarak dışa aktarılabilir.
+- **Demo:** Demo/Simülatör modu, şehir + otoyol sürüşü, vites geçişleri ve birkaç sert olay içeren gerçekçi bir sürüş döngüsü üretir.
+
 ## Lisans
 
 Bu proje açık kaynaktır ve **GNU GPL v3.0** lisansı ile dağıtılır (bkz. `LICENSE`). PSA ECU adresleri ve bazı arıza kodu listeleri GPL-3.0 lisanslı [ludwig-v/arduino-psa-diag](https://github.com/ludwig-v/arduino-psa-diag) projesinden derlenmiştir; kaynaklar `data/SOURCES.md` içindedir.
@@ -63,7 +78,7 @@ Katkılar memnuniyetle karşılanır: yeni araç/ECU adresleri, doğrulanmış D
 ## Test
 
 ```
-python tests/test_smoke.py          # simülatör -> ELM katmanı (GUI yok)
+python tests/test_smoke.py          # simülatör -> ELM katmanı + sürüş/vites/puan birim testleri (GUI yok)
 python tests/test_gui_offscreen.py  # QT_QPA_PLATFORM=offscreen ile GUI oluşturma
 ```
 

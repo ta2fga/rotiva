@@ -49,6 +49,7 @@ def run_bg(fn, on_ok=None, on_err=None) -> Task:
 
 class Poller(QThread):
     value = Signal(str, object)
+    value_ts = Signal(str, object, float)   # (anahtar, değer, okuma zamanı)
     stopped = Signal(str)
 
     def __init__(self, state: "AppState"):
@@ -63,11 +64,13 @@ class Poller(QThread):
         cycle = 0
         elm = self.state.elm
         while not self._stop and elm and elm.connected:
-            keys = self.state.poll_keys()
-            if not keys:
+            if not self.state.poll_keys():
                 time.sleep(0.2)
                 continue
-            for k in keys:
+            plan = self.state.poll_plan(cycle)
+            if not plan:
+                time.sleep(0.01)
+            for k in plan:
                 if self._stop:
                     break
                 item = self.state.by_key.get(k)
@@ -85,14 +88,17 @@ class Poller(QThread):
                     return
                 self.state.live[k] = v
                 self.value.emit(k, v)
+                self.value_ts.emit(k, v, time.time())
             cycle += 1
-        self.stopped.emit("")
+        self.stopped.emit("" if self._stop else "Bağlantı kesildi")
 
 
 class AppState(QObject):
     connection_changed = Signal(bool)
     log = Signal(str)
     value = Signal(str, object)
+    value_ts = Signal(str, object, float)
+    connection_lost = Signal()
     catalog_changed = Signal()
     dashboard_changed = Signal()
     mfr_changed = Signal()
@@ -111,8 +117,14 @@ class AppState(QObject):
         self.poller: Optional[Poller] = None
         self.mfr_reachable = None      # None: bilinmiyor, True/False
         self._owners: dict = {}
+        self._slow: dict = {}
+        self.reconnect_factory = None   # () -> (ELM327, proto, demo); bağlantı sayfası ayarlar
+        self.link_lost = False
+        self.reconnecting = False
         self._lock = threading.Lock()
         self.rebuild_catalog()
+        from .trip_ctl import TripController
+        self.trip = TripController(self)
 
     # --- katalog
     def rebuild_catalog(self):
@@ -136,6 +148,7 @@ class AppState(QObject):
 
     def set_elm(self, elm: ELM327, demo: bool):
         self.elm, self.demo = elm, demo
+        self.link_lost = False
         self.live.clear()
         self.rebuild_catalog()
         self.mfr_reachable = None
@@ -150,6 +163,9 @@ class AppState(QObject):
         run_bg(lambda: probe_manufacturer(elm, self.store), done, lambda e: done(False))
 
     def disconnect(self):
+        """Kullanıcı bağlantıyı keser (otomatik yeniden bağlanma yapılmaz)."""
+        self.reconnect_factory = None
+        self.link_lost = False
         self._stop_poller()
         self.mfr_reachable = None
         elm, self.elm = self.elm, None
@@ -159,24 +175,86 @@ class AppState(QObject):
         self.connection_changed.emit(False)
 
     # --- poller
-    def set_poll(self, owner: str, keys):
+    def set_poll(self, owner: str, keys, slow=None, slow_every: int = 4):
+        """keys her döngüde, slow anahtarları her slow_every döngüde bir okunur (yavaş BLE adaptörler için)."""
         with self._lock:
-            if keys:
-                self._owners[owner] = list(keys)
+            if keys or slow:
+                self._owners[owner] = (list(keys or []), list(slow or []), max(1, slow_every))
             else:
                 self._owners.pop(owner, None)
 
     def poll_keys(self) -> list:
         with self._lock:
             out = []
-            for ks in self._owners.values():
-                out += [k for k in ks if k not in out]
+            for ks, sl, _ in self._owners.values():
+                out += [k for k in ks + sl if k not in out]
             return out
+
+    def poll_plan(self, cycle: int) -> list:
+        """Bu döngüde okunacak anahtarlar (hızlılar önce)."""
+        with self._lock:
+            fast, slow = [], []
+            for ks, sl, ev in self._owners.values():
+                fast += [k for k in ks if k not in fast]
+                if cycle % ev == 0:
+                    slow += [k for k in sl if k not in slow]
+            return fast + [k for k in slow if k not in fast]
+
+    # --- bağlantı kopması / otomatik yeniden bağlanma
+    def mark_lost(self):
+        if self.elm is not None and not self.link_lost:
+            self.link_lost = True
+            if self.poller:
+                self.poller.stop()      # veri akışı kesildi; yeni bağlantıda yeniden başlatılır
+            self.connection_lost.emit()
+
+    def reconnect(self, on_done=None):
+        """Son bağlantı ayarlarıyla yeniden bağlanır (arka planda)."""
+        fac = self.reconnect_factory
+        if not fac or self.reconnecting:
+            return False
+        try:
+            elm, proto, demo = fac()      # taşıma nesnesi ana iş parçacığında (arayüz okunur) oluşturulur
+        except Exception:  # noqa: BLE001
+            return False
+        self.reconnecting = True
+
+        def work():
+            try:
+                elm.connect(proto)
+            except Exception:
+                try:
+                    elm.disconnect()
+                except Exception:  # noqa: BLE001
+                    pass
+                raise
+            return elm, demo
+
+        def ok(r):
+            if self.reconnect_factory is None:       # bu sırada kullanıcı kesti
+                self.reconnecting = False
+                run_bg(r[0].disconnect)
+                return
+            old = self.elm
+            self.set_elm(*r)
+            self.reconnecting = False
+            if old is not None and old is not r[0]:
+                run_bg(old.disconnect)
+            if on_done:
+                on_done(True)
+
+        def err(_e):
+            self.reconnecting = False
+            if on_done:
+                on_done(False)
+        run_bg(work, ok, err)
+        return True
 
     def _start_poller(self):
         self._stop_poller()
         self.poller = Poller(self)
         self.poller.value.connect(self._on_value, Qt.QueuedConnection)
+        self.poller.value_ts.connect(self.value_ts, Qt.QueuedConnection)
         self.poller.stopped.connect(self._on_poller_stopped, Qt.QueuedConnection)
         self.poller.start()
 
@@ -190,8 +268,9 @@ class AppState(QObject):
         self.value.emit(k, v)
 
     def _on_poller_stopped(self, msg):
-        if msg and self.connected:
+        if msg:
             self.log.emit(f"! Okuma durdu: {msg}")
+            self.mark_lost()
 
     def read_item(self, item: Item):
         """Tek değeri okur (poller iş parçacığında). Okunamazsa None."""

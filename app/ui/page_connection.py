@@ -227,7 +227,7 @@ class ConnectionPage(QWidget):
 
     def _make_transport(self, mode):
         if mode == "demo":
-            return SimTransport(full_psa=self.full_psa.isChecked())
+            return SimTransport(full_psa=self.full_psa.isChecked(), drive=True)
         if mode == "serial":
             port = self.port.currentData()
             if not port:
@@ -249,6 +249,9 @@ class ConnectionPage(QWidget):
                                     "Kontağı açın (motor kapalı) ve tekrar deneyin. Adaptör bilgileri kullanılabilir.")
         self.state.info = info
         self.state.set_elm(elm, demo)
+        mode, proto = self.current_mode(), self.proto.currentData()
+        self.state.reconnect_factory = lambda: (ELM327(self._make_transport(mode), log=self.state.log.emit),
+                                                proto, demo)
 
     def _failed(self, e):
         self.btn.setEnabled(True)
