@@ -187,17 +187,58 @@ class SimTransport(private val latencyMs: Long = 15, clock: () -> Double = { Sys
 }
 
 /**
- * Demo modu için yapay GPS/ivme: hız profilinden mesafe integrali alınır; rota bir daire üzerinde,
- * yükseklik tepeli bir profildir (eğim yaklaşık ±%10'a kadar).
+ * Demo modu için yapay GPS/ivme: hız profilinden mesafe integrali alınır; rota kapalı, tepeli bir çevrim yoludur
+ * (yaklaşık 5-6 km, eğim ±%10'a kadar, düzgün virajlar). Yükseklik mesafenin periyodik fonksiyonudur.
  */
 class DemoWorld {
     var dist = 0.0; private set
     private var lastT: Double? = null
     private var lastSpeed = 0.0
-    var lat = 41.0; var lon = 29.0; var alt = 100.0; var bearing = 0.0
+    var lat = LAT0; var lon = LON0; var alt = 100.0; var bearing = 0.0
     var gLong = 0.0; var gLat = 0.0
 
-    fun altitudeAt(d: Double) = 120 + 45 * sin(d / 420.0) + 12 * sin(d / 97.0)
+    companion object {
+        const val LAT0 = 41.0200
+        const val LON0 = 29.0500
+        // yerel metre (doğu, kuzey): kapalı çevrim yolu köşeleri
+        private val CORNERS = listOf(
+            0.0 to 0.0, 700.0 to 90.0, 1200.0 to 400.0, 1350.0 to 930.0, 1050.0 to 1430.0,
+            450.0 to 1580.0, -250.0 to 1350.0, -570.0 to 780.0, -450.0 to 230.0,
+        ).map { it.first * 1.5 to it.second * 1.5 }
+        /** Catmull-Rom ile yumuşatılmış yoğun yol: (x, y, kümülatif mesafe). */
+        val PATH: List<Triple<Double, Double, Double>> by lazy {
+            val n = CORNERS.size
+            val pts = ArrayList<Pair<Double, Double>>()
+            for (i in 0 until n) {
+                val p0 = CORNERS[(i - 1 + n) % n]; val p1 = CORNERS[i]; val p2 = CORNERS[(i + 1) % n]; val p3 = CORNERS[(i + 2) % n]
+                for (k in 0 until 24) {
+                    val t = k / 24.0; val t2 = t * t; val t3 = t2 * t
+                    fun c(a: Double, b: Double, cc: Double, d: Double) =
+                        0.5 * ((2 * b) + (-a + cc) * t + (2 * a - 5 * b + 4 * cc - d) * t2 + (-a + 3 * b - 3 * cc + d) * t3)
+                    pts.add(c(p0.first, p1.first, p2.first, p3.first) to c(p0.second, p1.second, p2.second, p3.second))
+                }
+            }
+            pts.add(pts[0])
+            var d = 0.0
+            pts.mapIndexed { i, p -> if (i > 0) d += Math.hypot(p.first - pts[i - 1].first, p.second - pts[i - 1].second); Triple(p.first, p.second, d) }
+        }
+        val LOOP_M: Double get() = PATH.last().third
+
+        fun pointAt(dm: Double): Triple<Double, Double, Double> {   // x, y, yön (derece)
+            val d = ((dm % LOOP_M) + LOOP_M) % LOOP_M
+            var lo = 0; var hi = PATH.size - 1
+            while (hi - lo > 1) { val mid = (lo + hi) / 2; if (PATH[mid].third <= d) lo = mid else hi = mid }
+            val a = PATH[lo]; val b = PATH[hi]
+            val f = if (b.third > a.third) (d - a.third) / (b.third - a.third) else 0.0
+            val brg = (Math.toDegrees(Math.atan2(b.first - a.first, b.second - a.second)) + 360) % 360
+            return Triple(a.first + (b.first - a.first) * f, a.second + (b.second - a.second) * f, brg)
+        }
+
+        fun altitudeAt(dm: Double): Double {
+            val w = 2 * PI * dm / LOOP_M
+            return 85 + 40 * sin(w) + 18 * sin(2 * w + 1.0) + 8 * sin(5 * w + 0.5)
+        }
+    }
 
     fun step(t: Double, speedKmh: Double) {
         val lt = lastT
@@ -208,12 +249,15 @@ class DemoWorld {
             gLong = ((speedKmh - lastSpeed) / 3.6 / max(dt, 1e-3)) / VehicleFrame.G
         }
         lastT = t; lastSpeed = speedKmh
-        val radius = 1500.0
-        val ang = dist / radius
-        lat = 41.0 + (radius * sin(ang)) / 111320.0
-        lon = 29.0 + (radius * (1 - cos(ang))) / (111320.0 * cos(Math.toRadians(41.0)))
-        bearing = (Math.toDegrees(ang) + 90) % 360
+        val (x, y, brg) = pointAt(dist)
+        lat = LAT0 + y / 111320.0
+        lon = LON0 + x / (111320.0 * cos(Math.toRadians(LAT0)))
+        bearing = brg
         alt = altitudeAt(dist)
-        gLat = (v * v / radius) / VehicleFrame.G
+        // yanal ivme: v^2 * yön değişim hızı (sağa dönüş +)
+        val b2 = pointAt(dist + 6.0).third
+        val b1 = pointAt(dist - 6.0).third
+        val dpsi = Math.toRadians(((b2 - b1 + 540) % 360) - 180) / 12.0     // rad/m
+        gLat = v * v * dpsi / VehicleFrame.G
     }
 }

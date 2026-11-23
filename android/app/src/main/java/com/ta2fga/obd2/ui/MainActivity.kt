@@ -85,6 +85,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Engine.init(applicationContext)
+        initOsm(applicationContext)
         setContent {
             val theme by Engine.prefs.theme.collectAsStateWithLifecycle()
             AppTheme(theme) {

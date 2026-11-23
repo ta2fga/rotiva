@@ -24,6 +24,23 @@ class TripReport(
         val t0 = samples.firstOrNull()?.t ?: 0.0
         thin(samples.map { TsPoint(it.t - t0, it.speed, it.rpm, it.gear) }, 600)
     }
+    val track: List<TrackPoint> by lazy {
+        val t0 = samples.firstOrNull()?.t ?: 0.0
+        thin(samples, 600).mapIndexed { i, s ->
+            TrackPoint(i, s.t - t0, s.dist / 1000, s.alt, s.grade, s.lat, s.lon, s.speed, s.rpm, s.gear)
+        }
+    }
+
+    /** Olay + konum (en yakın örneğin enlem/boylamı). */
+    class EventPos(val event: Event, val lat: Double, val lon: Double)
+    val eventPositions: List<EventPos> by lazy {
+        val ts = samples.map { it.t }
+        result.events.mapNotNull { e ->
+            val s = samples.getOrNull(nearestIndex(ts, e.ts))
+            if (s?.lat != null && s.lon != null) EventPos(e, s.lat!!, s.lon!!) else null
+        }
+    }
+
     val route: List<Pair<Double, Double>> by lazy {
         thin(samples.filter { it.lat != null && it.lon != null }.map { it.lat!! to it.lon!! }, 400)
     }

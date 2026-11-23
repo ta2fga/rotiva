@@ -84,6 +84,10 @@ fun shareReport(ctx: Context, r: TripReport, id: String) {
 fun ReportBody(r: TripReport, ctx: Context) {
     val m = r.m
     val ex = LocalExtra.current
+    var cursor by remember { mutableStateOf<Int?>(null) }
+    var routeMode by remember { mutableStateOf(RouteColor.SPEED) }
+    var fullscreen by remember { mutableStateOf(false) }
+    if (fullscreen) FullscreenMap(r, routeMode, { routeMode = it }, cursor) { fullscreen = false }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("${fmtDate(r.startTs)} - ${fmtDate(r.endTs)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
         AppCard(Modifier.fillMaxWidth()) {
@@ -119,33 +123,30 @@ fun ReportBody(r: TripReport, ctx: Context) {
             AppCard(Modifier.fillMaxWidth()) { Text(t.text, color = if (t.kind == "good") ex.ok else MaterialTheme.colorScheme.onSurface) }
         }
 
-        if (r.altProfile.size >= 2) {
+        if (r.track.count { it.alt != null } >= 2) {
             SectionTitle("Yükseklik profili (mesafeye göre)")
             AppCard(Modifier.fillMaxWidth()) {
-                AltitudeChart(r.altProfile, ex.series[1], ex.border, Modifier.fillMaxWidth().height(180.dp))
-                val a = r.altProfile
-                Text("0 - ${tr1(a.last().first, 1)} km · ${tr1(a.minOf { it.second }, 0)} - ${tr1(a.maxOf { it.second }, 0)} m",
-                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                ProfileChart(r, ChartKind.ALT, cursor, { cursor = it }, ex.series[1], ex.series[2], ex.series[1], ex.crit, ex.border,
+                    MaterialTheme.colorScheme.onSurfaceVariant, Modifier.fillMaxWidth().height(200.dp))
+                Text("Grafiğe dokunun veya sürükleyin: imleç haritada da görünür.", style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
-        if (r.series.size >= 2) {
+        if (r.track.size >= 2) {
             SectionTitle("Hız, devir ve vites (zamana göre)")
             AppCard(Modifier.fillMaxWidth()) {
-                SpeedRpmChart(r, ex.series[0], ex.series[2], ex.series[1], ex.crit, ex.border, Modifier.fillMaxWidth().height(220.dp))
+                ProfileChart(r, ChartKind.SPEED, cursor, { cursor = it }, ex.series[0], ex.series[2], ex.series[1], ex.crit, ex.border,
+                    MaterialTheme.colorScheme.onSurfaceVariant, Modifier.fillMaxWidth().height(230.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(top = 4.dp)) {
-                    Legend("Hız", ex.series[0]); Legend("Devir", ex.series[2]); Legend("Vites", ex.series[1]); Legend("Olay", ex.crit)
+                    Legend("Hız", ex.series[0]); Legend("Devir (0-4000+)", ex.series[2]); Legend("Vites (0-6)", ex.series[1]); Legend("Olay", ex.crit)
                 }
             }
         }
-        if (r.route.size >= 2) {
-            SectionTitle("Rota")
+        if (r.track.count { it.lat != null } >= 2) {
+            SectionTitle("Rota (OpenStreetMap)")
             AppCard(Modifier.fillMaxWidth()) {
-                RouteChart(r.route, ex.series[0], ex.ok, ex.crit, Modifier.fillMaxWidth().height(260.dp))
-                r.osmLink()?.let { link ->
-                    TextButton(onClick = { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }) {
-                        Text("Başlangıcı OpenStreetMap'te göster")
-                    }
-                }
+                RouteControls(routeMode, { routeMode = it }, onFullscreen = { fullscreen = true })
+                RouteMap(r, routeMode, cursor, Modifier.fillMaxWidth().height(300.dp))
             }
         }
         SectionTitle("Olaylar")
@@ -181,74 +182,37 @@ fun Legend(t: String, c: Color) {
     }
 }
 
-private fun DrawScope.grid(color: Color, rows: Int = 4) {
-    for (i in 0..rows) { val y = size.height * i / rows; drawLine(color, Offset(0f, y), Offset(size.width, y), 1f) }
-}
 
 @Composable
-fun AltitudeChart(pts: List<Pair<Double, Double>>, line: Color, grid: Color, modifier: Modifier) {
-    Canvas(modifier) {
-        grid(grid.copy(alpha = 0.5f))
-        val x0 = pts.first().first; val x1 = pts.last().first
-        val lo = pts.minOf { it.second }; val hi = pts.maxOf { it.second }
-        val dy = max(hi - lo, 5.0); val dx = max(x1 - x0, 1e-6)
-        val path = Path(); val fill = Path()
-        pts.forEachIndexed { i, p ->
-            val x = ((p.first - x0) / dx * size.width).toFloat()
-            val y = (size.height - (p.second - lo) / dy * size.height * 0.9f - size.height * 0.05f).toFloat()
-            if (i == 0) { path.moveTo(x, y); fill.moveTo(x, size.height); fill.lineTo(x, y) } else { path.lineTo(x, y); fill.lineTo(x, y) }
+fun RouteControls(mode: RouteColor, onMode: (RouteColor) -> Unit, onFullscreen: (() -> Unit)?) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+        RouteColor.values().forEach { m ->
+            if (m == mode) Button(onClick = { onMode(m) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp)) { Text(m.label) }
+            else OutlinedButton(onClick = { onMode(m) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp)) { Text(m.label) }
         }
-        fill.lineTo(size.width, size.height); fill.close()
-        drawPath(fill, line.copy(alpha = 0.22f))
-        drawPath(path, line, style = Stroke(width = 4f))
+        Box(Modifier.weight(1f))
+        if (onFullscreen != null) TextButton(onClick = onFullscreen) { Text("Tam ekran") }
+    }
+    val lg = legendFor(mode)
+    if (lg.isNotEmpty()) Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        lg.forEach { (t, c) -> Legend(t, Color(c)) }
     }
 }
 
 @Composable
-fun SpeedRpmChart(r: TripReport, speedC: Color, rpmC: Color, gearC: Color, evC: Color, grid: Color, modifier: Modifier) {
-    Canvas(modifier) {
-        grid(grid.copy(alpha = 0.5f))
-        val se = r.series
-        val tMax = max(se.last().t, 1.0)
-        val sMax = max(120.0, se.mapNotNull { it.speed }.maxOrNull() ?: 120.0)
-        val rMax = max(4000.0, se.mapNotNull { it.rpm }.maxOrNull() ?: 4000.0)
-        fun line(sel: (TripReport.TsPoint) -> Double?, maxV: Double, c: Color, w: Float, step: Boolean = false) {
-            val p = Path(); var started = false; var lastY = 0f
-            for (pt in se) {
-                val v = sel(pt)
-                if (v == null) { started = false; continue }
-                val x = (pt.t / tMax * size.width).toFloat()
-                val y = (size.height - v / maxV * size.height).toFloat()
-                if (!started) { p.moveTo(x, y); started = true } else { if (step) p.lineTo(x, lastY); p.lineTo(x, y) }
-                lastY = y
+fun FullscreenMap(r: TripReport, mode: RouteColor, onMode: (RouteColor) -> Unit, cursor: Int?, onClose: () -> Unit) {
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = onClose,
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+    ) {
+        androidx.compose.material3.Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            Column(Modifier.fillMaxSize().padding(top = 28.dp, bottom = 12.dp).padding(horizontal = 8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.weight(1f)) { RouteControls(mode, onMode, null) }
+                    Button(onClick = onClose) { Text("Kapat") }
+                }
+                RouteMap(r, mode, cursor, Modifier.fillMaxWidth().weight(1f))
             }
-            drawPath(p, c, style = Stroke(width = w))
         }
-        line({ it.rpm }, rMax, rpmC.copy(alpha = 0.8f), 3f)
-        line({ it.speed }, sMax, speedC, 4f)
-        line({ it.gear?.toDouble() }, 6.0, gearC, 3f, step = true)
-        r.result.events.forEach { e ->
-            val x = (e.t / tMax * size.width).toFloat()
-            drawLine(evC.copy(alpha = 0.45f), Offset(x, 0f), Offset(x, size.height), 2f)
-            drawCircle(evC, 6f, Offset(x, 8f))
-        }
-    }
-}
-
-@Composable
-fun RouteChart(route: List<Pair<Double, Double>>, line: Color, start: Color, end: Color, modifier: Modifier) {
-    Canvas(modifier) {
-        val lat0 = route.map { it.first }.average()
-        val pts = route.map { (it.second * cos(Math.toRadians(lat0))) to it.first }
-        val minX = pts.minOf { it.first }; val maxX = pts.maxOf { it.first }
-        val minY = pts.minOf { it.second }; val maxY = pts.maxOf { it.second }
-        val span = max(max(maxX - minX, maxY - minY), 1e-9)
-        val scale = min(size.width, size.height) * 0.9 / span
-        val ox = (size.width - (maxX - minX) * scale) / 2; val oy = (size.height - (maxY - minY) * scale) / 2
-        fun map(p: Pair<Double, Double>) = Offset((ox + (p.first - minX) * scale).toFloat(), (size.height - (oy + (p.second - minY) * scale)).toFloat())
-        val path = Path()
-        pts.forEachIndexed { i, p -> val o = map(p); if (i == 0) path.moveTo(o.x, o.y) else path.lineTo(o.x, o.y) }
-        drawPath(path, line, style = Stroke(width = 5f))
-        drawCircle(start, 12f, map(pts.first())); drawCircle(end, 12f, map(pts.last()))
     }
 }
