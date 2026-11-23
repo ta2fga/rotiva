@@ -164,7 +164,7 @@ class DriveModeView(QWidget):
         L = self.ctl.live
         sp, rpm, gear, sc = L.get("speed"), L.get("rpm"), L.get("gear"), L.get("score")
         self.speed.setText("—" if sp is None else f"{sp:.0f}")
-        self.gear.setText("N" if gear is None and (sp or 0) < 3 else "–" if gear is None else str(gear))
+        self.gear.setText(L.get("gear_label") or "—")     # 1..5, N (boşta/debriyaj) ya da — (bilinmiyor)
         col = theme.TEXT if rpm is None or rpm < 3000 else theme.WARN if rpm < 3500 else theme.CRIT
         self.rpm.setStyleSheet(f"font-size:84px;font-weight:700;color:{col};")
         self.rpm.setText("—" if rpm is None else f"{rpm:.0f}")

@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.SharedPreferences
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import com.ta2fga.rotiva.core.ConnectHint
+import org.json.JSONArray
 import org.json.JSONObject
 
 enum class SpeedUnit(val label: String) { KMH("km/s"), MPH("mph") }
@@ -45,4 +47,20 @@ class Prefs(ctx: Context) {
     var lastDeviceName: String?
         get() = sp.getString("last_device_name", null)
         set(v) { sp.edit().putString("last_device_name", v).apply() }
+
+    /** Cihaz başına ELM önbelleği (protokol + desteklenen PID'ler): sonraki bağlantıda protokol araması yapılmaz. */
+    fun elmHint(addr: String): ConnectHint? = sp.getString("elm_" + addr.uppercase(), null)?.let { raw ->
+        runCatching {
+            val j = JSONObject(raw)
+            val a = j.getJSONArray("s")
+            ConnectHint(j.getString("p"), j.optString("d"), (0 until a.length()).map { a.getInt(it) }.toSet())
+        }.getOrNull()
+    }
+
+    fun setElmHint(addr: String, h: ConnectHint?) {
+        val k = "elm_" + addr.uppercase()
+        if (h == null) { sp.edit().remove(k).apply(); return }
+        sp.edit().putString(k, JSONObject().put("p", h.protocolNum).put("d", h.protocolDesc)
+            .put("s", JSONArray(h.supported.sorted())).toString()).apply()
+    }
 }

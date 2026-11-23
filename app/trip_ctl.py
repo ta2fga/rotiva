@@ -27,7 +27,8 @@ class TripController(QObject):
         self.gear = GearEstimator.from_dict(st.get("gear_model"))
         self.rec = TripRecorder(st.get("trip", {}), self.gear)
         self.latest: dict = {}
-        self.live = dict(speed=None, rpm=None, gear=None, score=None, subs={})
+        self.latest_ts: dict = {}
+        self.live = dict(speed=None, rpm=None, gear=None, gear_label="—", score=None, subs={})
         self.status = ""
         self.retry_s = 3.0
         self._last_live = 0.0
@@ -100,6 +101,7 @@ class TripController(QObject):
     def _on_conn(self, ok: bool):
         if ok:
             self.latest.clear()
+            self.latest_ts.clear()
             self.state.set_poll("trip", FAST, SLOW, 4)
             self.retry.stop()
             self._set_status("")
@@ -125,15 +127,19 @@ class TripController(QObject):
             self.retry.stop()
 
     def _on_value(self, k: str, v, ts: float):
+        if v is None:
+            return                                 # tek NO DATA son iyi değeri silmez
         self.latest[k] = v
+        self.latest_ts[k] = ts
         if k != "speed":
             return
         rpm = self.latest.get("rpm")
-        if v is None or rpm is None:
+        if rpm is None or ts - self.latest_ts.get("rpm", 0) > 5.0:
             return
         ev = self.rec.feed(ts, rpm, v, self.latest.get("load"), self.latest.get("coolant"),
-                           self.latest.get("map"), self.latest.get("maf"))
-        self.live.update(speed=v, rpm=rpm, gear=self.gear.gear)
+                           self.latest.get("map"), self.latest.get("maf"),
+                           skew=ts - self.latest_ts.get("rpm", ts))
+        self.live.update(speed=v, rpm=rpm, gear=self.gear.gear, gear_label=self.gear.label(ts))
         if self.status in ("lost", "offline") and self.state.connected:
             self._set_status("")
         if ev == "started":

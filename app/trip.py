@@ -122,9 +122,11 @@ class TripRecorder:
             self.paused = False
             self.pauses.append((self._pause_t, t))
 
-    def feed(self, t: float, rpm=None, speed=None, load=None, coolant=None, map_kpa=None, maf=None):
-        """Bir örnek işler (rpm+hız her döngüde). Olay döner: 'started' | 'resumed' | None."""
-        g = self.gear.update(t, rpm, speed)
+    def feed(self, t: float, rpm=None, speed=None, load=None, coolant=None, map_kpa=None, maf=None,
+             skew: float = 0.0):
+        """Bir örnek işler (rpm+hız her döngüde). skew: devir ile hız okumaları arasındaki süre (vites için).
+        Olay döner: 'started' | 'resumed' | None."""
+        g = self.gear.update(t, rpm, speed, skew)
         if rpm is None and speed is None:
             return None
         s = Sample(t, rpm, speed, load, coolant, map_kpa, maf, g)

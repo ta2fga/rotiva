@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("APPDATA", tempfile.mkdtemp())
 
 from app import coach, scoring                              # noqa: E402
-from app.gear import GearEstimator                          # noqa: E402
+from app.gear import DEFAULT_RATIOS, NEUTRAL, GearEstimator     # noqa: E402
 from app.scoring import Sample                              # noqa: E402
 from app.simulator import DriveCycle                        # noqa: E402
 from app.trip import TripRecorder, list_trips, read_samples  # noqa: E402
@@ -51,11 +51,57 @@ class GearTest(unittest.TestCase):
 
     def test_classify_and_none(self):
         g = GearEstimator()
-        self.assertEqual(g.classify(2000, 60), 4)            # 30 km/s per 1000
-        self.assertIsNone(g.classify(800, 10))               # rölanti + hareket = kavrama
-        self.assertIsNone(g.classify(2000, 2))
-        self.assertIsNone(g.classify(2000, 53))              # hiçbir kümeye uymuyor (26.5)
-        self.assertEqual(g.classify(2500, 20), 1)
+        self.assertEqual(g.classify(2000, 58), 4)            # 29 km/s per 1000
+        self.assertEqual(g.classify(2500, 19), 1)            # 7,6
+        self.assertEqual(g.classify(850, 40), NEUTRAL)       # hareket hâlinde rölanti: boşta/debriyaj
+        self.assertEqual(g.classify(900, 1), NEUTRAL)        # duruyor
+        self.assertIsNone(g.classify(2000, 50))              # hiçbir merkeze uymuyor (25): geçiş/debriyaj
+        self.assertIsNone(g.classify(None, 50))              # veri yok -> bilinmiyor
+        self.assertIsNone(g.classify(0, 0))                  # motor kapalı -> bilinmiyor
+
+    def test_hysteresis_and_unknown(self):
+        g = GearEstimator()
+        t = T0
+        for _ in range(10):
+            g.update(t, 2000, 43)                            # 3. vites
+            t += 0.3
+        self.assertEqual(g.gear, 3)
+        g.update(t, 2000, 58)                                # tek sapan örnek vitesi değiştirmez
+        t += 0.3
+        self.assertEqual(g.gear, 3)
+        for _ in range(3):                                   # kısa debriyaj (tutarsız) -> vites korunur
+            g.update(t, 2000, 50)
+            t += 0.3
+        self.assertEqual(g.gear, 3)
+        self.assertEqual(g.label(t), "3")
+        self.assertEqual(g.label(t + 10), "—")               # veri eskidi -> bilinmiyor, "boş" değil
+        self.assertIsNone(g.gear_at(t + 10))
+
+    def test_alignment_rejects_stale_pairs(self):
+        """Devir ve hız farklı anlarda okunuyor: hizalayıcı enterpolasyon yapar, skew büyükse çift atılır."""
+        g = GearEstimator()
+        t = T0
+        # 2. viteste hızlanma: hız 20->40 km/s, devir = hız/14*1000 ; devir hızdan 0.4 sn önce okunuyor
+        for i in range(40):
+            sp = 20 + i * 0.5
+            g.push_rpm(t, (sp - 0.2) / 14.0 * 1000)
+            g.push_speed(t + 0.4, sp)
+            t += 0.8
+        self.assertEqual(g.gear, 2)
+        g2 = GearEstimator()
+        g2.update(T0, 2000, 43, skew=1.5)                    # çok eski devir: kullanılmaz
+        self.assertIsNone(g2.state)
+
+    def test_learning_stays_bounded_and_old_model_discarded(self):
+        g = GearEstimator()
+        t = T0
+        for _ in range(400):                                 # 4. ile 5. arası tuhaf oran (32,8): öğrenmeye girmez
+            g.update(t, 2000, 65.6)
+            t += 0.3
+        for i, d in enumerate(DEFAULT_RATIOS):
+            self.assertLessEqual(abs(g.ratios[i] - d) / d, 0.18 + 1e-9)
+        self.assertEqual(GearEstimator.from_dict({"ratios": [9, 16, 24, 31, 40], "counts": [1] * 5}).ratios,
+                         DEFAULT_RATIOS)
 
     def test_shifts_detected(self):
         S, g = build_samples(1)

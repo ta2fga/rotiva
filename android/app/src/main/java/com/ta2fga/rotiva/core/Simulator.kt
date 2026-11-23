@@ -123,8 +123,10 @@ class SimulatedELM(private val clock: () -> Double = { System.currentTimeMillis(
         return (if (out.isEmpty()) "" else out.joinToString("\r") + "\r") + "\r"
     }
 
-    private fun dispatch(c: String): List<String> {
-        if (c.startsWith("AT")) return at(c.substring(2))
+    private fun dispatch(c0: String): List<String> {
+        if (c0.startsWith("AT")) return at(c0.substring(2))
+        // "010C1": sondaki tek hane yanıt sayısıdır (ELM327 v1.3+)
+        val c = if (c0.length == 5 && c0.startsWith("01")) c0.dropLast(1) else c0
         if (!Regex("[0-9A-F]+").matches(c) || c.length % 2 != 0) return listOf("?")
         val d = IntArray(c.length / 2) { c.substring(it * 2, it * 2 + 2).toInt(16) }
         val t = clock() - t0
@@ -148,7 +150,7 @@ class SimulatedELM(private val clock: () -> Double = { System.currentTimeMillis(
     }
 
     private fun at(a: String): List<String> = when {
-        a.startsWith("Z") -> listOf("", "ELM327 v2.1")
+        a.startsWith("Z") || a == "WS" -> listOf("", "ELM327 v2.1")
         a == "I" -> listOf("ELM327 v2.1")
         a.startsWith("S") && !a.startsWith("SP") && !a.startsWith("ST") && !a.startsWith("SH") -> { spaces = a.substring(1) != "0"; listOf("OK") }
         a == "DPN" -> listOf("A6")

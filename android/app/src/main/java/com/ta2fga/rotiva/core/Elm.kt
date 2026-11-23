@@ -3,6 +3,8 @@ package com.ta2fga.rotiva.core
 /** ELM327 katmanı: taşıma arayüzü, ISO-TP ayrıştırma, OBD yardımcıları (desktop app/elm327.py). */
 open class ElmError(msg: String) : Exception(msg)
 class ElmTimeout(msg: String) : ElmError(msg)
+/** Taşıma (BLE) bağlantısı koptu: yeniden bağlanmak gerekir. */
+class LinkLost(msg: String = "BLE bağlantısı koptu") : ElmError(msg)
 class NoData(msg: String = "Veri yok") : ElmError(msg)
 class NegativeResponse(val service: Int, val nrc: Int) :
     ElmError("Negatif yanıt: servis %02X, kod 0x%02X".format(service, nrc))
@@ -16,7 +18,7 @@ interface Transport {
 }
 
 val ELM_ERRORS = listOf("UNABLE TO CONNECT", "BUS BUSY", "CAN ERROR", "BUFFER FULL", "BUS ERROR", "DATA ERROR",
-    "FB ERROR", "LV RESET", "ACT ALERT")
+    "FB ERROR", "LV RESET", "ACT ALERT", "STOPPED")
 private val HEX = Regex("^[0-9A-F]+$")
 
 fun cleanLines(raw: String, cmd: String = ""): List<String> {
@@ -104,9 +106,17 @@ fun extractService(lines: List<String>, mode: Int, pid: Int?, headerLen: Int): I
     throw NoData("Beklenen yanıt yok")
 }
 
-class ElmConnectInfo(val version: String, val protocol: String, val ecuOk: Boolean, val voltage: Double?)
+class ElmConnectInfo(val version: String, val protocol: String, val ecuOk: Boolean, val voltage: Double?,
+                     val fast: Boolean = false)
 
-/** Bloklayan ELM327 istemcisi. */
+/** Cihaz başına önbellek: bilinen protokol (ör. "6") ve desteklenen PID kümesi -> hızlı başlatma. */
+class ConnectHint(val protocolNum: String, val protocolDesc: String, val supported: Set<Int>)
+
+/**
+ * Bloklayan ELM327 istemcisi. Tüm komutlar tek kilit altında sıralıdır (aynı anda tek komut): her komut
+ * '>' istemine kadar beklenir, parçalı BLE bildirimleri istem gelene dek birleştirilir. Zaman aşımından sonra
+ * gecikmiş yanıtın bir sonraki komuta karışmaması için önce istem (>) beklenip tampon boşaltılır.
+ */
 class Elm327(val transport: Transport, private val log: (String) -> Unit = {}) {
     @Volatile var connected = false
         private set
@@ -116,12 +126,26 @@ class Elm327(val transport: Transport, private val log: (String) -> Unit = {}) {
     var headerLen = 3
     var supported: Set<Int> = emptySet()
     var defaultTimeoutMs = 3000L
+    /** Mod 01 isteklerine yanıt sayısı ("010C1") ekle: ELM ilk yanıttan sonra beklemeden döner. */
+    var useResponseCount = true
     private val lock = Any()
+    private var resync = false
 
     val isCan get() = protocolNum.take(1) in listOf("6", "7", "8", "9")
 
+    /** Önceki (zaman aşımına uğramış) komutun gecikmiş yanıtını istem dahil yutar. */
+    private fun drainLate() {
+        val end = System.currentTimeMillis() + 600
+        while (System.currentTimeMillis() < end) {
+            val c = transport.read(50)
+            if (c.isNotEmpty() && String(c, Charsets.US_ASCII).contains('>')) break
+        }
+        while (transport.read(0).isNotEmpty()) { /* artıklar */ }
+    }
+
     fun exchange(cmd: String, timeoutMs: Long = defaultTimeoutMs): List<String> = synchronized(lock) {
         log("> $cmd")
+        if (resync) { resync = false; drainLate() }
         while (transport.read(0).isNotEmpty()) { /* eski yanıt artıklarını at */ }
         transport.write((cmd + "\r").toByteArray(Charsets.US_ASCII))
         val sb = StringBuilder()
@@ -134,42 +158,87 @@ class Elm327(val transport: Transport, private val log: (String) -> Unit = {}) {
                 if (sb.contains('>')) { done = true; break }
             }
         }
-        if (!done) throw ElmTimeout("Zaman aşımı: $cmd")
+        if (!done) { resync = true; throw ElmTimeout("Zaman aşımı: $cmd") }
         val lines = cleanLines(sb.toString(), cmd)
         lines.forEach { log("< $it") }
         lines
     }
 
-    fun connect(protocol: String = "0"): ElmConnectInfo {
+    /**
+     * Bağlanır. [hint] varsa hızlı yol: ATWS (sıcak başlatma) + ATSP<n> (protokol araması yok) + önbellekteki
+     * PID kümesi. Hızlı yol başarısız olursa aynı bağlantıda tam başlatmaya (ATZ + ATSP0 + PID taraması) düşer.
+     */
+    fun connect(protocol: String = "0", hint: ConnectHint? = null): ElmConnectInfo {
         transport.open()
         try {
-            val r = exchange("ATZ", 6000)
-            version = r.firstOrNull { "ELM" in it.uppercase() || "OBD" in it.uppercase() } ?: "ELM327"
-            for (c in listOf("ATE0", "ATL0", "ATS0", "ATH1", "ATAT1")) exchange(c)
-            exchange("ATSP$protocol")
-            connected = true
-            var ecuOk = true
-            try {
-                supported = scanSupported()
-            } catch (e: NoData) {
-                ecuOk = false
-            } catch (e: ElmError) {
-                log("! ${e.message}"); ecuOk = false
+            if (hint != null && hint.protocolNum.isNotEmpty()) {
+                try {
+                    return fastInit(hint)
+                } catch (e: LinkLost) { throw e
+                } catch (e: ElmError) {
+                    log("! hızlı başlatma başarısız (${e.message}); tam başlatma")
+                }
             }
-            readProtocol()
-            return ElmConnectInfo(version, this.protocol, ecuOk, voltage())
+            return fullInit(protocol)
         } catch (e: Exception) {
             disconnect(); throw e
         }
     }
 
+    private fun reset(warm: Boolean) {
+        var r: List<String>? = null
+        if (warm) r = try {
+            exchange("ATWS", 2500).takeIf { l -> l.none { it.trim() == "?" } }
+        } catch (e: LinkLost) { throw e } catch (_: ElmError) { null }
+        if (r == null) r = exchange("ATZ", 5000)
+        version = r.firstOrNull { "ELM" in it.uppercase() || "OBD" in it.uppercase() } ?: "ELM327"
+        for (c in listOf("ATE0", "ATL0", "ATS0", "ATH1", "ATAT1")) exchange(c, 1500)
+    }
+
+    private fun fastInit(h: ConnectHint): ElmConnectInfo {
+        reset(warm = true)
+        val ok = exchange("ATSP${h.protocolNum}", 1500)
+        if (ok.none { "OK" in it.uppercase() }) throw ElmError("ATSP${h.protocolNum} reddedildi")
+        protocolNum = h.protocolNum
+        protocol = h.protocolDesc
+        headerLen = headerLenFor(protocolNum)
+        val lines = exchange("0100", 5000)
+        val m = service(0x01, 0x00, lines)          // ECU yanıt vermezse NoData/ElmError -> tam başlatma
+        supported = h.supported.ifEmpty { supportedFromMasks(mapOf(0 to IntArray(4) { m.getOrElse(it) { 0 } })) }
+        connected = true
+        return ElmConnectInfo(version, protocol, true, voltage(), fast = true)
+    }
+
+    private fun fullInit(protocol: String): ElmConnectInfo {
+        reset(warm = false)
+        exchange("ATSP$protocol", 1500)
+        connected = true
+        var ecuOk = true
+        try {
+            supported = scanSupported()
+        } catch (e: LinkLost) { throw e
+        } catch (e: NoData) {
+            ecuOk = false
+        } catch (e: ElmError) {
+            log("! ${e.message}"); ecuOk = false
+        }
+        readProtocol()
+        return ElmConnectInfo(version, this.protocol, ecuOk, voltage())
+    }
+
+    /** Hızlı başlatma için saklanacak bilgi (yalnızca ECU yanıt verdiyse). */
+    fun hint(): ConnectHint? =
+        if (connected && protocolNum.isNotEmpty() && protocolNum != "0" && supported.isNotEmpty())
+            ConnectHint(protocolNum, protocol, supported) else null
+
     private fun readProtocol() {
         try {
-            val n = exchange("ATDPN")
+            val n = exchange("ATDPN", 1500)
             val pn = (n.firstOrNull() ?: "").trim().uppercase()
             protocolNum = if (pn.length == 2 && pn[0] == 'A') pn.substring(1) else pn
-            val d = exchange("ATDP")
+            val d = exchange("ATDP", 1500)
             protocol = (d.firstOrNull() ?: "").replace("AUTO, ", "").trim()
+        } catch (e: LinkLost) { throw e
         } catch (_: ElmError) {
         }
         headerLen = headerLenFor(protocolNum.ifEmpty { "6" })
@@ -210,13 +279,29 @@ class Elm327(val transport: Transport, private val log: (String) -> Unit = {}) {
     }
 
     fun voltage(): Double? = try {
-        exchange("ATRV").firstOrNull()?.replace(Regex("[^0-9.]"), "")?.toDouble()
-    } catch (_: Exception) { null }
+        exchange("ATRV", 1500).firstOrNull()?.replace(Regex("[^0-9.]"), "")?.toDouble()
+    } catch (e: LinkLost) { throw e } catch (_: Exception) { null }
 
-    fun readPid(pid: Pid): Double? = try {
-        val data = service(0x01, pid.pid)
-        if (data.size < pid.nbytes) null else pid.decode(data)
-    } catch (_: NoData) { null }
+    /**
+     * Mod 01 PID okur; zaman aşımında BİR kez yeniden dener. Desteklenmeyen/yanıtsız: [NoData];
+     * geçici veri yolu hataları (BUS BUSY, STOPPED...): [ElmError]; bağlantı kopması: [LinkLost].
+     */
+    fun queryPid(pid: Pid): Double {
+        val data = try { pidOnce(pid) } catch (e: ElmTimeout) { log("! ${e.message}; yeniden"); pidOnce(pid) }
+        if (data.size < pid.nbytes) throw NoData("Kısa yanıt")
+        return pid.decode(data)
+    }
+
+    private fun pidOnce(pid: Pid): IntArray {
+        if (useResponseCount && isCan) {
+            val l = exchange("01%02X1".format(pid.pid))
+            if (l.any { it.trim() == "?" }) { useResponseCount = false; log("! yanıt sayısı desteklenmiyor") }
+            else return extractService(l, 0x01, pid.pid, headerLen)
+        }
+        return service(0x01, pid.pid)
+    }
+
+    fun readPid(pid: Pid): Double? = try { queryPid(pid) } catch (_: NoData) { null }
 
     /** mode: 0x03 kayıtlı, 0x07 bekleyen, 0x0A kalıcı. */
     fun readDtcs(mode: Int): List<String> {

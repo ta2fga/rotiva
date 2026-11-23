@@ -296,14 +296,19 @@ fun ConnectDialog(locationOk: Boolean, onClose: () -> Unit) {
                     Text("Bluetooth taraması için 'Yakındaki cihazlar' izni gerekir.", style = MaterialTheme.typography.bodySmall)
                     Button(onClick = { launcher.launch(allRuntimePerms()) }, modifier = Modifier.fillMaxWidth()) { Text("Bluetooth izni ver") }
                 } else {
-                    Engine.prefs.lastDevice?.let { addr ->
-                        OutlinedButton(onClick = { begin(Mode.OBD, addr, Engine.prefs.lastDeviceName) }, modifier = Modifier.fillMaxWidth()) {
-                            Text("Son cihaz: ${Engine.prefs.lastDeviceName ?: addr}")
+                    val last = Engine.prefs.lastDevice
+                    if (last != null) {
+                        // doğrudan bağlantı (tarama yok)
+                        Button(onClick = { begin(Mode.OBD, last, Engine.prefs.lastDeviceName) }, modifier = Modifier.fillMaxWidth()) {
+                            Text("Son cihaza bağlan: ${Engine.prefs.lastDeviceName ?: last}")
                         }
                     }
+                    OutlinedButton(onClick = {
+                        if (!scanner.adapterOn()) err = "Bluetooth kapalı; açın." else { err = null; begin(Mode.OBD, null) }
+                    }, modifier = Modifier.fillMaxWidth()) { Text("Otomatik bul ve bağlan") }
                     Button(onClick = {
                         if (!scanner.adapterOn()) err = "Bluetooth kapalı; açın." else { err = null; if (!scanner.start()) err = "Tarama başlatılamadı" }
-                    }, enabled = !scanning, modifier = Modifier.fillMaxWidth()) { Text(if (scanning) "Taranıyor..." else "Cihazları tara") }
+                    }, enabled = !scanning, modifier = Modifier.fillMaxWidth()) { Text(if (scanning) "Taranıyor..." else "Cihazları listele") }
                     devices.forEach { d -> DeviceRow(d) { begin(Mode.OBD, d.address, d.name) } }
                 }
             }

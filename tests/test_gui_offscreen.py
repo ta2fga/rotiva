@@ -45,7 +45,7 @@ def drive_test(app, w):
     assert ctl.live["speed"] is not None and ctl.live["rpm"] is not None
     page.enter_drive_mode()
     pump(app, 1)
-    assert page.mode.speed.text() != "—" and page.mode.gear.text() in "N–12345"
+    assert page.mode.speed.text() != "—" and page.mode.gear.text() in "N—12345"
     w.grab()
     # bağlantı kopması: kayıt duraklar, otomatik yeniden bağlanır, aynı sürüşe devam eder
     ctl.retry_s = 1.0

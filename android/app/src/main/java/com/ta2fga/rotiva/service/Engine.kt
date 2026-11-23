@@ -29,7 +29,7 @@ data class Conn(val mode: Mode = Mode.NONE, val state: LinkState = LinkState.IDL
 
 /** Canlı değerler (2 Hz). */
 data class Live(
-    val speed: Double? = null, val rpm: Double? = null, val gear: Int? = null, val load: Double? = null,
+    val speed: Double? = null, val rpm: Double? = null, val gear: Int? = null, val gearLabel: String = "—", val load: Double? = null,
     val coolant: Double? = null, val alt: Double? = null, val grade: Double? = null,
     val gLong: Double? = null, val gLat: Double? = null, val calibrated: Boolean = false,
     val gpsAcc: Double? = null, val hasBaro: Boolean = false, val hasAccel: Boolean = false,
@@ -57,6 +57,8 @@ object Engine {
 
     val conn = MutableStateFlow(Conn())
     val values = MutableStateFlow<Map<String, Double?>>(emptyMap())
+    /** Son okuması gecikmiş (ama henüz silinmemiş) değerler: arayüzde soluk gösterilir. */
+    val stale = MutableStateFlow<Set<String>>(emptySet())
     val live = MutableStateFlow(Live())
     val trip = MutableStateFlow(TripUi())
     val message = MutableStateFlow<String?>(null)
@@ -155,6 +157,7 @@ object Engine {
         mode = Mode.NONE
         conn.value = Conn()
         values.value = emptyMap()
+        stale.value = emptySet()
         live.value = Live()
         app.stopService(Intent(app, RecordingService::class.java))
     }
@@ -198,67 +201,131 @@ object Engine {
     private suspend fun obdLoop() {
         val btm = app.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         var first = true
+        var fails = 0
         while (currentCoroutineContext().isActive) {
-            val addr = deviceAddress ?: return
             conn.update { it.copy(state = if (first) LinkState.CONNECTING else LinkState.RECONNECTING, detail = if (first) "Bağlanıyor" else "Yeniden bağlanıyor", obdOk = false) }
+            // Adres yoksa (otomatik bul) ya da doğrudan bağlantı üst üste başarısızsa: süzgeçli, ilk eşleşmede duran tarama
+            if (deviceAddress == null || fails >= 2) {
+                conn.update { it.copy(detail = "Adaptör aranıyor") }
+                val d = scanner.findFirst(deviceAddress, if (deviceAddress == null) 12000 else 6000)
+                if (d != null && deviceAddress == null) {
+                    deviceAddress = d.address
+                    prefs.lastDevice = d.address; prefs.lastDeviceName = d.name
+                }
+                if (deviceAddress == null) {
+                    conn.update { it.copy(state = LinkState.RECONNECTING, detail = "OBD adaptörü bulunamadı, yeniden aranıyor") }
+                    delay(2000); continue
+                }
+            }
+            val addr = deviceAddress ?: return
             val e = try {
                 @SuppressLint("MissingPermission")
-                val dev = btm.adapter.getRemoteDevice(addr)
+                val dev = btm.adapter.getRemoteDevice(addr)    // tarama yok: bilinen adrese doğrudan bağlan
                 Elm327(BleTransport(app, dev, ::logLine), ::logLine).also { elm = it }
-            } catch (ex: Exception) { message.value = "Bluetooth hatası: ${ex.message}"; delay(4000); continue }
+            } catch (ex: Exception) { message.value = "Bluetooth hatası: ${ex.message}"; delay(3000); continue }
+            val t0 = System.currentTimeMillis()
             try {
-                val info = withContext(NonCancellable) { e.connect() }
-                first = false
+                // önbellek yalnızca ilk denemelerde: hızlı yol iki kez başarısızsa tam başlatma
+                val hint = if (fails < 2) prefs.elmHint(addr) else null
+                val info = withContext(NonCancellable) { e.connect(hint = hint) }
+                logLine("bağlantı ${System.currentTimeMillis() - t0} ms" + if (info.fast) " (hızlı)" else "")
+                if (info.ecuOk) prefs.setElmHint(addr, e.hint())
+                first = false; fails = 0
                 conn.update { it.copy(state = LinkState.CONNECTED, obdOk = true,
                     detail = info.version + (if (info.protocol.isNotEmpty()) " · ${info.protocol}" else "") + (if (!info.ecuOk) " · ECU yanıt vermiyor" else "")) }
                 pollLoop(e)
             } catch (ex: CancellationException) { throw ex
             } catch (ex: Exception) {
                 logLine("! ${ex.message}")
+                fails++
             }
             runCatching { e.disconnect() }
-            // OBD verisini duraklat; iz kaydı (GPS) sürer
-            synchronized(obdVals) { obdVals.clear(); obdTs.clear() }
-            values.value = emptyMap()
+            // Son değerler hemen silinmez (eskime ile "—" olur); sürüş kaydı GPS ile sürer, bağlantı gelince devam eder
             conn.update { it.copy(state = LinkState.RECONNECTING, obdOk = false, detail = "Bağlantı koptu, yeniden deneniyor") }
             first = false
-            delay(3000)
+            delay(if (fails <= 1) 500L else minOf(5000L, 1000L * fails))
         }
     }
 
-    /** Sürekli okuma: hızlılar (devir, hız) her turda; diğerleri dönüşümlü. Bağlantı hatasında istisna fırlatır. */
+    /** Okuma aralıkları (sn): devir/hız her turda; motor yükü vb. ~1 sn; sıcaklık/yakıt gibi yavaşlar ~5 sn. */
+    private fun pollInterval(k: String): Double = when (k) {
+        "rpm", "speed" -> 0.0
+        "load", "map", "maf", "frp", "throttle" -> 1.0
+        BATTERY_KEY -> 10.0
+        else -> 5.0
+    }
+
+    private val nextDue = HashMap<String, Double>()
+    private val noData = HashMap<String, Int>()
+    private val disabledUntil = HashMap<String, Double>()
+
+    /**
+     * Sürekli okuma (tek iş parçacığı, sıralı komut kuyruğu): her turda devir + hız, ardından vadesi gelmiş en
+     * fazla 2 yavaş değer. Tek NO DATA / zaman aşımı değeri silmez; üst üste 5 NO DATA veren PID 30 sn atlanır.
+     * Yalnızca bağlantı kopması ya da adaptörün art arda yanıt vermemesi yeniden bağlanmaya yol açar.
+     */
     private fun pollLoop(e: Elm327) {
-        var cycle = 0
-        var cursor = 0
+        nextDue.clear(); noData.clear(); disabledUntil.clear()
+        var consecutiveErr = 0
         val recording = listOf("load", "coolant", "map", "maf", "frp")
         while (e.connected && (obdJob?.isActive != false)) {
+            val now0 = nowS()
             val sup = if (e.supported.isEmpty()) null else e.supported
-            val want = wanted.value
-            val slow = (recording + want).distinct().filter { k ->
-                k != "rpm" && k != "speed" && (BY_KEY[k]?.let { sup == null || it.pid in sup } ?: (k == BATTERY_KEY && cycle % 15 == 0))
+            fun usable(k: String): Boolean {
+                if ((disabledUntil[k] ?: 0.0) > now0) return false
+                if (k == BATTERY_KEY) return true
+                val p = BY_KEY[k] ?: return false
+                return sup == null || p.pid in sup
             }
             val plan = ArrayList<String>()
-            if (sup == null || 0x0C in sup) plan.add("rpm")
-            if (sup == null || 0x0D in sup) plan.add("speed")
-            if (slow.isNotEmpty()) repeat(minOf(3, slow.size)) { plan.add(slow[cursor % slow.size]); cursor++ }
-            if (BATTERY_KEY in want && cycle % 15 == 0 && BATTERY_KEY !in plan) plan.add(BATTERY_KEY)
+            if (usable("rpm")) plan.add("rpm")
+            if (usable("speed")) plan.add("speed")
+            val want = wanted.value
+            val others = (recording + want).distinct().filter { it != "rpm" && it != "speed" && usable(it) &&
+                (it != BATTERY_KEY || it in want) }
+            plan += others.filter { (nextDue[it] ?: 0.0) <= now0 }.sortedBy { nextDue[it] ?: 0.0 }.take(2)
             for (k in plan) {
-                val v = if (k == BATTERY_KEY) e.voltage() else BY_KEY[k]?.let { e.readPid(it) }
-                val now = System.currentTimeMillis() / 1000.0
-                synchronized(obdVals) { obdVals[k] = v; if (v != null) obdTs[k] = now }
-                if (k == "speed" && v != null) obdSpeedTs = now
+                val ta = nowS()
+                var v: Double? = null
+                try {
+                    v = if (k == BATTERY_KEY) e.voltage() else e.queryPid(BY_KEY.getValue(k))
+                    consecutiveErr = 0; noData[k] = 0
+                } catch (ex: LinkLost) { throw ex
+                } catch (ex: NoData) {
+                    val n = (noData[k] ?: 0) + 1; noData[k] = n
+                    if (n >= 5) { disabledUntil[k] = nowS() + 30.0; noData[k] = 0; logLine("! $k yanıt vermiyor; 30 sn atlanıyor") }
+                } catch (ex: NegativeResponse) {
+                    disabledUntil[k] = nowS() + 300.0
+                } catch (ex: ElmError) {
+                    // zaman aşımı (yeniden denemeden sonra) ya da BUS BUSY/STOPPED gibi geçici hata
+                    consecutiveErr++
+                    if (consecutiveErr >= 6) throw ElmError("Adaptör art arda yanıt vermiyor: ${ex.message}")
+                }
+                val tb = nowS()
+                nextDue[k] = tb + pollInterval(k)
+                if (v != null) {
+                    val tm = (ta + tb) / 2            // ölçüm anı: isteğin ortası (vites hizalaması için)
+                    synchronized(obdVals) { obdVals[k] = v; obdTs[k] = tm }
+                    if (k == "rpm") gearEst.pushRpm(tm, v)
+                    if (k == "speed") { obdSpeedTs = tm; gearEst.pushSpeed(tm, v) }
+                }
             }
             publishValues()
-            cycle++
             if (plan.isEmpty()) Thread.sleep(100)
         }
         throw ElmError("Bağlantı kesildi")
     }
 
+    private fun nowS() = System.currentTimeMillis() / 1000.0
+
+    /** Son İYİ değer; [maxAge] saniyeden eskiyse null. */
     private fun fresh(k: String, now: Double, maxAge: Double = 4.0): Double? = synchronized(obdVals) {
         val ts = obdTs[k] ?: return null
         if (now - ts > maxAge) null else obdVals[k]
     }
+
+    /** Değerler bu kadar eskiyince "—" olur (yavaş PID'ler için daha uzun). */
+    private fun staleAfter(k: String) = if (pollInterval(k) >= 5.0) 15.0 else 5.0
 
     private var lastPublish = 0L
     private fun publishValues() {
@@ -267,8 +334,16 @@ object Engine {
         lastPublish = nowMs
         val now = nowMs / 1000.0
         val m = HashMap<String, Double?>()
-        synchronized(obdVals) { for ((k, _) in obdVals) m[k] = fresh(k, now, 6.0) }
+        val st = HashSet<String>()
+        synchronized(obdVals) {
+            for ((k, ts) in obdTs) {
+                val age = now - ts
+                m[k] = if (age > staleAfter(k)) null else obdVals[k]
+                if (age > 2.5 + pollInterval(k)) st.add(k)
+            }
+        }
         values.update { old -> old.filterKeys { it in PHONE_ITEMS.map { p -> p.key } } + m }
+        if (stale.value != st) stale.value = st
     }
 
     // ------------------------------------------------------------------ DTC
@@ -347,9 +422,10 @@ object Engine {
             if (!gpsOk) { s.alt = null }
         }
 
-        // vites tahmini (OBD hızı + devir)
-        val gearSpeed = if (mode == Mode.PHONE) null else s.speed
-        s.gear = gearEst.update(now, s.rpm, gearSpeed)
+        // vites tahmini: okuma döngüsünde zamanca hizalı devir/hız çiftleriyle beslenir (GPS hızı kullanılmaz)
+        val gearLabel: String
+        if (mode == Mode.PHONE) { s.gear = null; gearLabel = "—" }
+        else { s.gear = gearEst.gearAt(now); gearLabel = gearEst.label(now) }
 
         // canlı eğim ve mesafe
         val v = s.speed ?: 0.0
@@ -385,7 +461,7 @@ object Engine {
         publishValues()
         values.update { it + phone }
 
-        live.value = Live(s.speed, s.rpm, s.gear, s.load, s.coolant, s.alt, grade, s.gLong, s.gLat,
+        live.value = Live(s.speed, s.rpm, s.gear, gearLabel, s.load, s.coolant, s.alt, grade, s.gLong, s.gLat,
             frame.calibrated || mode == Mode.DEMO, s.acc, hasBaro, hasAccel)
         conn.update { c -> if (c.gpsOk != gpsOk) c.copy(gpsOk = gpsOk) else c }
 

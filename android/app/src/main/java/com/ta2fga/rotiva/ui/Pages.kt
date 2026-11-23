@@ -68,9 +68,10 @@ val ALL_CATEGORIES = CATEGORIES + "Telefon"
 
 // ---------------------------------------------------------------------------------------------- Panom
 @Composable
-fun ValueCard(item: Item, v: Double?, su: SpeedUnit, tu: TempUnit, big: Boolean = true, onClick: (() -> Unit)? = null) {
+fun ValueCard(item: Item, v: Double?, su: SpeedUnit, tu: TempUnit, big: Boolean = true, stale: Boolean = false,
+              onClick: (() -> Unit)? = null) {
     val (txt, unit) = formatValue(item, v, su, tu)
-    val col = statusColor(statusOf(item, v))
+    val col = statusColor(statusOf(item, v)).let { if (stale) it.copy(alpha = 0.45f) else it }   // gecikmiş: soluk
     AppCard(Modifier.fillMaxWidth().then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)) {
         Text(item.name, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
         Row(verticalAlignment = Alignment.Bottom) {
@@ -86,6 +87,7 @@ fun PagePanom() {
     val p = Engine.prefs
     val dash by p.dashboard.collectAsStateWithLifecycle()
     val values by Engine.values.collectAsStateWithLifecycle()
+    val stale by Engine.stale.collectAsStateWithLifecycle()
     val su by p.speedUnit.collectAsStateWithLifecycle()
     val tu by p.tempUnit.collectAsStateWithLifecycle()
     var picking by remember { mutableStateOf(false) }
@@ -97,7 +99,7 @@ fun PagePanom() {
         }
         if (dash.isEmpty()) Text("Panoya değer eklemek için 'Değer seç' veya Değerler sayfasındaki yıldıza dokunun.", color = MaterialTheme.colorScheme.onSurfaceVariant)
         LazyVerticalGrid(GridCells.Adaptive(160.dp), verticalArrangement = Arrangement.spacedBy(10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            gridItems(dash.mapNotNull { byKey[it] }, key = { it.key }) { it2 -> ValueCard(it2, values[it2.key], su, tu) }
+            gridItems(dash.mapNotNull { byKey[it] }, key = { it.key }) { it2 -> ValueCard(it2, values[it2.key], su, tu, stale = it2.key in stale) }
         }
     }
     if (picking) {
@@ -257,7 +259,7 @@ fun PageDrive(onOpenConnect: () -> Unit) {
         RowSpaced {
             BigStat("Devir", live.rpm?.let { "%d".format(Math.round(it)) } ?: "—", "d/dk", Modifier.weight(1f),
                 if ((live.rpm ?: 0.0) > 3500) ex.crit else MaterialTheme.colorScheme.onSurface)
-            BigStat("Vites", live.gear?.toString() ?: "—", "", Modifier.weight(1f))
+            BigStat("Vites", live.gearLabel, "", Modifier.weight(1f))   // 1-5, N (boşta/debriyaj), — (bilinmiyor)
             BigStat("Yükseklik", live.alt?.let { "%d".format(Math.round(it)) } ?: "—", "m", Modifier.weight(1f))
         }
         RowSpaced {

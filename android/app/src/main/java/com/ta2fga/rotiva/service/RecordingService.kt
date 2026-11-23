@@ -15,14 +15,34 @@ import androidx.core.app.ServiceCompat
 import com.ta2fga.rotiva.R
 import com.ta2fga.rotiva.core.tr1
 import com.ta2fga.rotiva.ui.MainActivity
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
-/** Ön plan servisi (konum türü): ekran kapalıyken de kayıt sürer. Sürüş yalnızca kullanıcı bitirince sona erer. */
+/** Bildirim metni: sürüş yoksa yalnızca bağlantı durumu (kayıt ibaresi YOK). */
+fun notificationText(t: TripUi, c: Conn): String = if (t.active) {
+    (if (t.paused) "Sürüş duraklatıldı · " else "Sürüş kaydediliyor · ") +
+        "${tr1(t.distanceKm)} km · ${(t.durationS / 60).toInt()} dk · ↑${t.ascent.toInt()} m ↓${t.descent.toInt()} m"
+} else "${c.mode.label} · ${c.detail.ifEmpty { "hazır" }}"
+
+/**
+ * Ön plan servisi (konum türü): ekran kapalıyken de kayıt sürer. Sürüş yalnızca kullanıcı bitirince sona erer.
+ *
+ * Bildirim güncellemeleri servise ait, ANA iş parçacığındaki kapsamda yapılır: önceden Engine.scope
+ * (Dispatchers.Default) içinde nm.notify() çağrılıyordu; "Bağlantıyı kes" durumu değiştirip servisi
+ * durdururken yarışta gelen son notify(), servis yok edildikten SONRA aynı kimlikle (ongoing) bildirim
+ * yayınlıyor ve bildirim artık hiçbir servise bağlı olmadığı için süreç ölene dek kalıyordu.
+ */
 class RecordingService : Service() {
     private var wake: PowerManager.WakeLock? = null
     private var job: Job? = null
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    @Volatile private var alive = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -30,12 +50,14 @@ class RecordingService : Service() {
         super.onCreate()
         Engine.init(applicationContext)
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.createNotificationChannel(NotificationChannel(CH, "Sürüş kaydı", NotificationManager.IMPORTANCE_LOW))
+        nm.createNotificationChannel(NotificationChannel(CH, "Bağlantı ve sürüş kaydı", NotificationManager.IMPORTANCE_LOW))
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_FINISH) { Engine.finishTrip(); return START_NOT_STICKY }
-        if (intent?.action == ACTION_STOP) { Engine.stop(); return START_NOT_STICKY }
+        if (intent?.action == ACTION_STOP) { Engine.stop(); shutdown(); return START_NOT_STICKY }
+        if (!Engine.running()) { shutdown(); return START_NOT_STICKY }     // gecikmiş başlatma: motor zaten durdu
+        alive = true
         try {
             ServiceCompat.startForeground(this, ID, build("Başlatılıyor"), ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
         } catch (e: Exception) {
@@ -48,15 +70,14 @@ class RecordingService : Service() {
         }
         Engine.onServiceStarted()
         job?.cancel()
-        job = Engine.scope.launch {
-            combine(Engine.trip, Engine.conn) { t, c -> t to c }.collect { (t, c) ->
-                val text = if (t.active) {
-                    (if (t.paused) "Duraklatıldı · " else "Sürüş kaydediliyor · ") +
-                        "${tr1(t.distanceKm)} km · ${(t.durationS / 60).toInt()} dk · ↑${t.ascent.toInt()} m ↓${t.descent.toInt()} m"
-                } else "${c.mode.label} · ${c.detail.ifEmpty { "hazır" }}"
-                val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                nm.notify(ID, build(text, t.active))
-            }
+        job = scope.launch {
+            combine(Engine.trip, Engine.conn) { t, c -> Triple(notificationText(t, c), t.active, c.mode) }
+                .distinctUntilChanged().collect { (text, active, mode) ->
+                    if (!alive) return@collect
+                    if (mode == Mode.NONE) { shutdown(); return@collect }   // bağlantı kesildi: bildirim kalmasın
+                    val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                    nm.notify(ID, build(text, active))
+                }
         }
         return START_NOT_STICKY
     }
@@ -81,8 +102,21 @@ class RecordingService : Service() {
         return b.build()
     }
 
+    /** Ön planı bırakır, bildirimi kaldırır ve servisi durdurur. */
+    private fun shutdown() {
+        alive = false
+        job?.cancel(); job = null
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(ID)
+        stopSelf()
+    }
+
     override fun onDestroy() {
+        alive = false
         job?.cancel()
+        scope.cancel()
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(ID)
         wake?.let { if (it.isHeld) it.release() }
         wake = null
         super.onDestroy()

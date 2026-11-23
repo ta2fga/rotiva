@@ -11,6 +11,7 @@ import android.bluetooth.BluetoothProfile
 import android.content.Context
 import android.os.Build
 import com.ta2fga.rotiva.core.ElmError
+import com.ta2fga.rotiva.core.LinkLost
 import com.ta2fga.rotiva.core.Transport
 import java.util.UUID
 import java.util.concurrent.LinkedBlockingQueue
@@ -93,20 +94,29 @@ class BleTransport(private val ctx: Context, private val device: BluetoothDevice
             if (left <= 0) throw ElmError("BLE zaman aşımı ($kind)")
             val e = events.poll(left, TimeUnit.MILLISECONDS) ?: throw ElmError("BLE zaman aşımı ($kind)")
             if (e.kind == kind) return e
-            if (e.kind == "disc") throw ElmError("BLE bağlantısı koptu")
+            if (e.kind == "disc") throw LinkLost("BLE bağlantısı koptu (${e.status})")
         }
     }
 
     override fun open() {
+        // Android'in sık "133" (GATT_ERROR) hatasında bir kez hızlıca yeniden dene
+        try { openOnce() } catch (e: LinkLost) {
+            log("! ${e.message}; yeniden deneniyor"); Thread.sleep(400); openOnce()
+        }
+    }
+
+    private fun openOnce() {
         lost = false; events.clear(); rx.clear()
         val g = try {
             device.connectGatt(ctx, false, cb, BluetoothDevice.TRANSPORT_LE)
         } catch (e: SecurityException) { throw ElmError("Bluetooth izni yok") } ?: throw ElmError("GATT açılamadı")
         gatt = g
         try {
-            waitFor("conn", 15000)
+            waitFor("conn", 10000)
+            // Yüksek bağlantı önceliği: kısa bağlantı aralığı (7,5-15 ms) -> komut başına daha az gecikme
+            runCatching { g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH) }
             if (!g.discoverServices()) throw ElmError("Servis keşfi başlatılamadı")
-            val st = waitFor("svc", 15000)
+            val st = waitFor("svc", 10000)
             if (st.status != BluetoothGatt.GATT_SUCCESS) throw ElmError("Servis keşfi başarısız (${st.status})")
             val (notify, write) = pickCharacteristics(g.services)
             write.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
@@ -114,7 +124,7 @@ class BleTransport(private val ctx: Context, private val device: BluetoothDevice
             info = "servis ${short16(notify.service.uuid)} notify ${short16(notify.uuid)} write ${short16(write.uuid)}"
             log(info)
             if (g.requestMtu(185)) {
-                try { chunk = maxOf(20, waitFor("mtu", 2500).extra - 3) } catch (_: ElmError) { chunk = 20 }
+                try { chunk = maxOf(20, waitFor("mtu", 1500).extra - 3) } catch (e: LinkLost) { throw e } catch (_: ElmError) { chunk = 20 }
             }
             g.setCharacteristicNotification(notify, true)
             val cccd = notify.getDescriptor(uuid16("2902")) ?: throw ElmError("CCCD bulunamadı")
@@ -138,7 +148,7 @@ class BleTransport(private val ctx: Context, private val device: BluetoothDevice
 
     override fun write(data: ByteArray) {
         val g = gatt; val wc = writeChar
-        if (g == null || wc == null || lost) throw ElmError("BLE bağlantısı koptu")
+        if (g == null || wc == null || lost) throw LinkLost()
         var i = 0
         while (i < data.size) {
             val part = data.copyOfRange(i, minOf(data.size, i + chunk))
@@ -162,7 +172,7 @@ class BleTransport(private val ctx: Context, private val device: BluetoothDevice
     override fun read(timeoutMs: Long): ByteArray {
         var out = rx.poll(timeoutMs, TimeUnit.MILLISECONDS)
         if (out == null) {
-            if (lost) throw ElmError("BLE bağlantısı koptu")
+            if (lost) throw LinkLost()
             return ByteArray(0)
         }
         while (true) { out = out!! + (rx.poll() ?: break) }

@@ -77,4 +77,29 @@ class ElmTest {
         assertTrue(elm.readDtcs(0x03).isEmpty())
         elm.disconnect()
     }
+
+    @Test fun fastInitUsesCachedProtocolAndFallsBack() {
+        val full = Elm327(SimTransport(0))
+        val i1 = full.connect()
+        assertFalse(i1.fast)
+        val hint = full.hint()!!
+        assertEquals("6", hint.protocolNum)
+        assertTrue(0x0C in hint.supported)
+        full.disconnect()
+        val fast = Elm327(SimTransport(0))
+        val i2 = fast.connect(hint = hint)
+        assertTrue(i2.fast)
+        assertEquals(hint.supported, fast.supported)
+        assertNotNull(fast.queryPid(BY_PID.getValue(0x0C)))      // "010C1" yanıt sayılı istek
+        fast.disconnect()
+        // geçersiz önbellek (ECU bu protokolde yanıt vermiyor gibi) -> tam başlatmaya düşer
+        val bad = Elm327(SimTransport(0))
+        val i3 = bad.connect(hint = ConnectHint("", "", emptySet()))
+        assertFalse(i3.fast)
+        assertTrue(bad.connected)
+    }
+
+    @Test fun stoppedIsTransientNotNoData() {
+        try { raiseIfError(listOf("STOPPED")); fail() } catch (e: ElmError) { assertTrue(e !is NoData) }
+    }
 }
