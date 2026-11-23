@@ -16,11 +16,27 @@ COMMON_PAIRS = [
 PROBES = [("10 03", bytes([0x10, 0x03])), ("10 C0", bytes([0x10, 0xC0])), ("3E 00", bytes([0x3E, 0x00]))]
 
 
+MIN_SAFE_TX = 0x600
+
+
+def is_safe_tx(tx: str) -> bool:
+    """Güvenlik: 0x600 altındaki CAN kimlikleri araçta normal işletim mesajlarıyla
+    çakışabilir. Bunlara teşhis paketi göndermek ağdaki gerçek mesajları bozar ve
+    BSI/gösterge'de 'motor arızası' gibi uyarılara yol açabilir (gerçek araçta görüldü).
+    Bu yüzden yalnızca 0x600-0x7FF teşhis aralığına izin verilir."""
+    try:
+        return MIN_SAFE_TX <= int(tx, 16) <= 0x7FF
+    except (TypeError, ValueError):
+        return False
+
+
 def candidate_pairs(store) -> list:
-    """psa_data.json ECU'ları + yaygın PSA çiftleri (yinelenenler elenir)."""
+    """psa_data.json ECU'ları + yaygın PSA çiftleri (yinelenenler elenir, güvensiz kimlikler atlanır)."""
     out, seen = [], set()
     for e in store.ecus:
         k = (e["tx"], e["rx"])
+        if not is_safe_tx(e["tx"]):
+            continue
         if k not in seen:
             seen.add(k)
             out.append({"name": e["name"], "tx": e["tx"], "rx": e["rx"], "session": e.get("session", ""),
@@ -41,6 +57,9 @@ def scan_ecus(elm: ELM327, pairs: list, progress: Callable[[int, int, str], None
             break
         if progress:
             progress(i, len(pairs), f"{p['tx']} -> {p['rx']}")
+        if not is_safe_tx(p["tx"]):
+            res.append({"pair": p, "responses": {}, "alive": False, "skipped": "güvenli aralık dışı (<0x600)"})
+            continue
         got = {}
         with elm.ecu_context({"tx": p["tx"], "rx": p["rx"]}):
             for label, payload in PROBES:
@@ -67,6 +86,8 @@ def scan_ids(elm: ELM327, ecu: dict, service: int, ids: range,
              only_positive: bool = False) -> list:
     """Servis 21 (yerel ID 00-FF) veya 22 (DID) aralığını tarar. [(id, hex, olumlu)]"""
     hits, total = [], len(ids)
+    if not is_safe_tx(ecu.get("tx", "")):
+        raise ValueError("Güvenlik: yalnızca 0x600-0x7FF teşhis kimliklerine istek gönderilebilir.")
     with elm.ecu_context(ecu, session=True):
         for n, i in enumerate(ids):
             if stop():

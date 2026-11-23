@@ -44,7 +44,7 @@ PIDS = [
     Pid(0x11, "throttle", "Gaz Kelebeği / Pedal", "%", 1, "A*100/255", 0, 100, "Motor"),
     Pid(0x1F, "runtime", "Motor Çalışma Süresi", "sn", 2, "A*256+B", 0, 65535, "Motor"),
     Pid(0x21, "dist_mil", "Arıza Lambası ile Mesafe", "km", 2, "A*256+B", 0, 65535, "Araç"),
-    Pid(0x23, "frp", "Yakıt Ray Basıncı", "kPa", 2, "10*(A*256+B)", 0, 250000, "Yakıt", 190000, 210000),
+    Pid(0x23, "frp", "Yakıt Ray Basıncı", "bar", 2, "(A*256+B)/10", 0, 2500, "Yakıt", 1900, 2100),
     Pid(0x2F, "fuel_level", "Yakıt Seviyesi", "%", 1, "A*100/255", 0, 100, "Yakıt", None, None, 15, 8),
     Pid(0x33, "baro", "Barometrik Basınç", "kPa", 1, "A", 0, 255, "Hava / Turbo"),
     Pid(0x42, "vmod", "Akü / Modül Voltajı", "V", 2, "(A*256+B)/1000", 0, 16, "Elektrik", 15.0, 15.8, 12.0, 11.4, 2),

@@ -36,7 +36,8 @@ class SmokeTest(unittest.TestCase):
         rpm = self.elm.read_pid(BY_KEY["rpm"])
         self.assertTrue(500 < rpm < 3000, rpm)
         self.assertTrue(-40 <= self.elm.read_pid(BY_KEY["coolant"]) <= 130)
-        self.assertGreater(self.elm.read_pid(BY_KEY["frp"]), 1000)
+        frp = self.elm.read_pid(BY_KEY["frp"])  # bar
+        self.assertTrue(150 < frp < 2500, frp)
 
     def test_dtc_and_clear(self):
         self.assertIn("P0087", self.elm.read_dtcs(0x03))
