@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLineEdit, QLi
 from .. import APP_NAME, APP_VERSION, APP_VEHICLE
 from ..pids import is_low_conf
 from ..safe_eval import compile_formula, FormulaError
+from . import theme
 
 
 class ValuePickerDialog(QDialog):
@@ -78,7 +79,7 @@ class SaveDidDialog(QDialog):
         f.setSpacing(12)
         idtxt = f"{ident:04X}" if service == 0x22 else f"{ident:02X}"
         f.addRow(QLabel(f"<b>{ecu_name}</b> · servis {service:02X} · ID {idtxt}<br>"
-                        f"<span style='color:#8b95a5'>Yanıt: {hex_resp}</span>"))
+                        f"<span style='color:{theme.MUTED}'>Yanıt: {hex_resp}</span>"))
         self.name = QLineEdit(f"Keşif {idtxt}")
         self.formula = QLineEdit("A")
         self.unit = QLineEdit()

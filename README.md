@@ -42,6 +42,18 @@ Gerçek bir C-Elysée'den ölçülen yanıtları taklit eder (VIN yok, üretici 
 
 Not: Bazı araç/adaptör çiftlerinde motor ECU'su üretici servislerini (UDS/KWP) desteklemez veya PSA ECU'ları OBD soketindeki bu pinlerden erişilemez; bu durumda uygulama standart OBD verileriyle çalışır ve bilgi şeridi gösterir.
 
+## Temalar
+
+Kenar çubuğunun altındaki **Tema** listesinden (renk örnekli) tema seçilir; değişiklik anında uygulanır, yeniden başlatma gerekmez ve seçim `settings.json` içinde saklanır.
+
+- **Gece Mavisi** (varsayılan, koyu)
+- **Aydınlık** (açık zemin, mavi vurgu)
+- **Grafit Turuncu** (koyu grafit, turuncu vurgu)
+- **Orman** (yeşil tonlu koyu, zümrüt vurgu)
+- **Yüksek Kontrast** (siyah zemin, sarı vurgu, kalın kenarlık; araçta gün ışığı için)
+
+Durum renkleri (normal/uyarı/kritik) her temada okunaklı kalacak şekilde ayrı ayarlanmıştır. Yeni tema eklemek için `app/ui/theme.py` içindeki `PALETTES` sözlüğüne bir palet eklemek yeterlidir.
+
 ## Lisans
 
 Bu proje açık kaynaktır ve **GNU GPL v3.0** lisansı ile dağıtılır (bkz. `LICENSE`). PSA ECU adresleri ve bazı arıza kodu listeleri GPL-3.0 lisanslı [ludwig-v/arduino-psa-diag](https://github.com/ludwig-v/arduino-psa-diag) projesinden derlenmiştir; kaynaklar `data/SOURCES.md` içindedir.

@@ -11,7 +11,7 @@ def settings_path() -> str:
     return os.path.join(d, "settings.json")
 
 
-DEFAULTS = {"dashboard": ["rpm", "speed", "coolant", "load", "frp", "atrv"], "conn": {}}
+DEFAULTS = {"dashboard": ["rpm", "speed", "coolant", "load", "frp", "atrv"], "conn": {}, "theme": "Gece Mavisi"}
 
 
 class Settings:
@@ -37,6 +37,14 @@ class Settings:
 
     def set_dashboard(self, keys: list):
         self.data["dashboard"] = list(dict.fromkeys(keys))
+        self.save()
+
+    @property
+    def theme(self) -> str:
+        return self.data.get("theme") or "Gece Mavisi"
+
+    def set_theme(self, name: str):
+        self.data["theme"] = name
         self.save()
 
     def get(self, k, default=None):

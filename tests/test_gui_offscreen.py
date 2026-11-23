@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
+from app.ui import theme  # noqa: E402
 from app.ui.theme import QSS  # noqa: E402
 from app.ui.main_window import MainWindow  # noqa: E402
 
@@ -40,6 +41,19 @@ def main():
     for i in range(w.stack.count()):
         w.nav.setCurrentRow(i)
         pump(app, 0.3)
+    # tüm temaları gez
+    from app.settings import Settings
+    for name in theme.THEME_NAMES:
+        w.theme_box.setCurrentText(name)
+        assert theme.CURRENT == name and w.state.settings.theme == name
+        assert theme.STATUS_COLOR["ok"] == theme.PALETTES[name]["ok"]
+        for i in range(w.stack.count()):
+            w.nav.setCurrentRow(i)
+            pump(app, 0.1)
+        w.grab()
+        print("tema:", name)
+    assert Settings(w.state.settings.path).theme == theme.THEME_NAMES[-1], "tema kalıcı değil"
+    w.theme_box.setCurrentText(theme.DEFAULT_THEME)
     w.pages["Rapor"].refresh()
     from app import report
     report.save_pdf(os.path.join(tempfile.mkdtemp(), "t.pdf"), w.pages["Rapor"].html())

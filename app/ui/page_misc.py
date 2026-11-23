@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, Q
 
 from .. import report
 from ..state import AppState, run_bg
+from . import theme
 from .widgets import page_header, make_item, fmt_value
 
 
@@ -87,7 +88,7 @@ class VehiclePage(QWidget):
         for k, v in info.items():
             r = self.table.rowCount()
             self.table.insertRow(r)
-            self.table.setItem(r, 0, make_item(k, color="#8b95a5"))
+            self.table.setItem(r, 0, make_item(k, color=theme.MUTED))
             self.table.setItem(r, 1, make_item(v or "—"))
 
 

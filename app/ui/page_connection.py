@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame, QRadio
 from ..elm327 import ELM327, SerialTransport, TcpTransport, ElmError
 from ..simulator import SimTransport
 from ..state import AppState, run_bg
+from . import theme
 from .widgets import page_header
 
 BAUDS = ["38400", "9600", "115200", "57600", "19200", "230400", "500000"]
@@ -260,7 +261,7 @@ class ConnectionPage(QWidget):
         if ok:
             i = self.state.info
             self.status.setText(f"● Bağlı  ·  {i.get('version', '')}  ·  {self.state.elm.protocol}")
-            self.status.setStyleSheet("color:#22c55e;")
+            self.status.setStyleSheet(f"color:{theme.OK};")
         else:
             self.status.setText("Bağlı değil")
             self.status.setStyleSheet("")

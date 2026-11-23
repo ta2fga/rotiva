@@ -10,7 +10,6 @@ from ..state import AppState, run_bg
 from . import theme
 from .widgets import page_header, make_item
 
-TYPE_COLOR = {"Kayıtlı": theme.CRIT, "Bekleyen": theme.WARN, "Kalıcı": theme.CRIT}
 
 
 class DtcPage(QWidget):
@@ -71,7 +70,7 @@ class DtcPage(QWidget):
         for code, kind, ecu, desc in self.state.dtcs:
             r = self.table.rowCount()
             self.table.insertRow(r)
-            self.table.setItem(r, 0, make_item(code, color=TYPE_COLOR.get(kind, theme.WARN)))
+            self.table.setItem(r, 0, make_item(code, color={"Kayıtlı": theme.CRIT, "Bekleyen": theme.WARN, "Kalıcı": theme.CRIT}.get(kind, theme.WARN)))
             self.table.setItem(r, 1, make_item(kind))
             self.table.setItem(r, 2, make_item(ecu))
             self.table.setItem(r, 3, make_item(desc))

@@ -12,8 +12,6 @@ from PySide6.QtWidgets import (QFrame, QLabel, QVBoxLayout, QHBoxLayout, QPushBu
 from ..pids import Item, status_of, is_low_conf
 from . import theme
 
-SERIES_COLORS = ["#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#a855f7", "#14b8a6", "#ec4899", "#eab308"]
-
 
 def fmt_value(item: Item, v) -> str:
     if v is None:
@@ -63,6 +61,7 @@ class ValueCard(QFrame):
     def __init__(self, item: Item, editable: bool = False):
         super().__init__()
         self.item = item
+        self._v = None
         self.setObjectName("card")
         self.setMinimumSize(230, 150)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -113,8 +112,12 @@ class ValueCard(QFrame):
         l.addLayout(foot)
         self.set_value(None)
 
+    def restyle(self):
+        self.set_value(self._v)
+
     def set_value(self, v):
         it = self.item
+        self._v = v
         st = status_of(it, v) if has_thresholds(it) else ("ok" if v is not None else "none")
         col = theme.STATUS_COLOR[st] if has_thresholds(it) else (theme.TEXT if v is not None else theme.MUTED)
         self.value.setText(fmt_value(it, v))
@@ -169,7 +172,7 @@ class LineChart(QWidget):
         now = time.time()
         x = plot.left() + 4
         for n, (key, (item, data)) in enumerate(self.series.items()):
-            col = QColor(SERIES_COLORS[n % len(SERIES_COLORS)])
+            col = QColor(theme.SERIES_COLORS[n % len(theme.SERIES_COLORS)])
             span = (item.vmax - item.vmin) or 1
             path = QPainterPath()
             first = True

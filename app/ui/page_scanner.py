@@ -43,7 +43,7 @@ class ScannerPage(QWidget):
                                                          "Yalnızca okuma servisleri kullanılır; kontak açık, motor kapalı olmalıdır."))
         self.mfr_banner = QLabel("Bu adaptör/araç kombinasyonunda üretici ECU'larına erişilemedi; standart OBD verileri kullanılıyor.")
         self.mfr_banner.setWordWrap(True)
-        self.mfr_banner.setStyleSheet("background:rgba(59,130,246,.14);color:#9cc2ff;border-radius:10px;padding:10px 14px;")
+        self.mfr_banner.setStyleSheet(theme.banner_style())
         self.mfr_banner.setVisible(False)
         l.addWidget(self.mfr_banner)
         state.mfr_changed.connect(self._mfr)
