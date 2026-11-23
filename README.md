@@ -69,6 +69,38 @@ Durum renkleri (normal/uyarı/kritik) her temada okunaklı kalacak şekilde ayr�
 - **Ayrıntı ve rapor:** Sürüş listesinden bir kayıt seçince puan dağılımı, ipuçları, hız/devir/vites grafiği (olay işaretli) görünür; **HTML rapor** olarak dışa aktarılabilir.
 - **Demo:** Demo/Simülatör modu, şehir + otoyol sürüşü, vites geçişleri ve birkaç sert olay içeren gerçekçi bir sürüş döngüsü üretir.
 
+## Android
+
+`android/` klasöründe masaüstü uygulamanın yerel Android sürümü (Kotlin + Jetpack Compose, Material 3) bulunur. ELM327, vites tahmini, puanlama ve koçluk mantığı masaüstünden taşınmıştır; üzerine GPS/barometre/ivmeölçer ile yükseklik, eğim ve viraj analizi eklenmiştir. Arayüz Türkçedir.
+
+### Kurulum (APK yükleme)
+1. [Releases](https://github.com/ta2fga/psa-obd2-tani/releases) sayfasından en son `PSA-OBD2-Tani-vX.Y.Z.apk` dosyasını telefona indirin (ya da Actions sekmesindeki `PSA-OBD2-Tani-debug` artifact'ını kullanın).
+2. Telefonda "Bilinmeyen kaynaklardan yüklemeye izin ver" ayarını açıp APK'yı yükleyin (Android 8.0 / API 26 ve üstü).
+3. Kendiniz derlemek için: `cd android && ./gradlew testDebugUnitTest assembleDebug` (JDK 17+, Android SDK 36). APK: `android/app/build/outputs/apk/debug/app-debug.apk`.
+
+### İzinler
+İlk açılışta gerekçeleriyle birlikte istenir:
+- **Konum (hassas)**: hız, rota, yükseklik ve eğim için; ekran kapalıyken kayıt (ön plan servisi, konum türü) için gereklidir.
+- **Yakındaki cihazlar (Bluetooth)**: BLE OBD adaptörünü bulmak ve bağlanmak için. Demo ve Telefon modu bu izin olmadan çalışır.
+- **Bildirimler**: kayıt sürerken kalıcı bildirim (Sürüşü bitir / Bağlantıyı kes düğmeleri) için.
+
+### Kullanım
+- Üstteki durum çubuğundan **Bağlan**: *OBD adaptörü* (BLE tarama; gerçek adaptör adı `OBDII`, servis FFF0, bildirim FFF1, yazma FFF2 - yazmalar yanıtlıdır; FFE0/FFE1 ve 18F0 yedektir), *Demo (simülatör)* veya *Telefon modu* (OBD yok, hız GPS'ten).
+- **Panom**: sabitlenmiş büyük değer kartları ("Değer seç"). **Tüm Değerler**: gruplu, aramalı liste; yıldız ile panoya sabitleme. Yakıt ray basıncı bar cinsindendir.
+- **Arıza Kodları**: standart OBD2 03/07/0A okuma ve onaylı silme. (Masaüstündeki ECU tarayıcı taşınmamıştır.)
+- **Sürüş**: büyük, etkileşim gerektirmeyen sürüş ekranı (hız, devir, vites, yükseklik, eğim, boyuna/yanal g). Sürüş hız 5 km/s'yi aşınca otomatik başlar (Ayarlar'dan kapatılabilir) ve **yalnızca "Sürüşü bitir"** ile sona erer. OBD kopunca OBD verisi durur, aynı sürüşe otomatik yeniden bağlanılır; kayıt 30 sn'de bir diske yazılır, uygulama kapanırsa bir sonraki açılışta devam/bitir/sil sorulur.
+- **Geçmiş**: sürüş listesi ve rapor: puan ve alt puanlar, mesafe/süre, toplam çıkış-iniş, en yüksek/düşük nokta, en dik yokuş/iniş, yokuş-düz-iniş yüzdeleri, yükseklik profili, hız-devir-vites grafiği (olay işaretli), rota çizimi, Türkçe koçluk ipuçları. Rapor HTML olarak paylaşılabilir.
+- **Ayarlar**: 5 tema (Gece Mavisi, Aydınlık, Grafit Turuncu, Orman, Yüksek Kontrast), otomatik başlatma, birimler (km/s-mph, °C-°F), vites öğrenmesini sıfırlama.
+
+### Sensörler ve ölçüm
+- İvme: `TYPE_LINEAR_ACCELERATION` (yoksa ivme eksi alçak geçirgen yerçekimi). Yerçekimi ve GPS yönü/hız değişimiyle araç eksenlerine izdüşüm yapılır; ileri eksen düz yolda hızlanma/frenlemeyle otomatik kalibre edilir (telefon yönelimi önemsizdir).
+- Konum: Play Services varsa FusedLocationProvider, yoksa LocationManager (1 Hz, yüksek doğruluk).
+- Yükseklik: GPS mutlak değeri barometre göreli değişimiyle Kalman süzgecinde birleştirilir; çıkış/iniş 2,5 m histerezisle, eğim en az 50 m'lik pencerede hesaplanır.
+- Puanlama: masaüstü kuralları + eğim bağlamı (dik yokuşta sert hızlanma daha az cezalı; yokuşta düşük devir; uzun inişte sürekli fren, motor freni önerisi), ivmeölçerle doğrulanan sert hızlanma/frenleme ve 0,35 g üstü sert viraj.
+
+### Sürüm yayınlama
+`main`'e her push'ta GitHub Actions testleri çalıştırır ve debug APK'yı artifact olarak yükler. `v*` etiketi (ör. `v1.0.0`) itildiğinde aynı APK `PSA-OBD2-Tani-<etiket>.apk` adıyla GitHub Release'e eklenir (debug anahtarıyla imzalı).
+
 ## Lisans
 
 Bu proje açık kaynaktır ve **GNU GPL v3.0** lisansı ile dağıtılır (bkz. `LICENSE`). PSA ECU adresleri ve bazı arıza kodu listeleri GPL-3.0 lisanslı [ludwig-v/arduino-psa-diag](https://github.com/ludwig-v/arduino-psa-diag) projesinden derlenmiştir; kaynaklar `data/SOURCES.md` içindedir.
