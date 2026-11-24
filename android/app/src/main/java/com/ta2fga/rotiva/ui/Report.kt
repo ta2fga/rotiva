@@ -13,10 +13,16 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -27,6 +33,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -87,7 +94,8 @@ fun ReportBody(r: TripReport, ctx: Context) {
     var cursor by remember { mutableStateOf<Int?>(null) }
     var routeMode by remember { mutableStateOf(RouteColor.SPEED) }
     var fullscreen by remember { mutableStateOf(false) }
-    if (fullscreen) FullscreenMap(r, routeMode, { routeMode = it }, cursor) { fullscreen = false }
+    var showEvents by rememberSaveable { mutableStateOf(true) }
+    if (fullscreen) FullscreenMap(r, routeMode, { routeMode = it }, showEvents, { showEvents = it }, cursor) { fullscreen = false }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("${fmtDate(r.startTs)} - ${fmtDate(r.endTs)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
         AppCard(Modifier.fillMaxWidth()) {
@@ -145,8 +153,8 @@ fun ReportBody(r: TripReport, ctx: Context) {
         if (r.track.count { it.lat != null } >= 2) {
             SectionTitle("Rota (OpenStreetMap)")
             AppCard(Modifier.fillMaxWidth()) {
-                RouteControls(routeMode, { routeMode = it }, onFullscreen = { fullscreen = true })
-                RouteMap(r, routeMode, cursor, Modifier.fillMaxWidth().height(300.dp))
+                RouteControls(routeMode, { routeMode = it }, showEvents, { showEvents = it }, onFullscreen = { fullscreen = true })
+                RouteMap(r, routeMode, cursor, Modifier.fillMaxWidth().height(300.dp), showEvents)
             }
         }
         SectionTitle("Olaylar")
@@ -184,7 +192,11 @@ fun Legend(t: String, c: Color) {
 
 
 @Composable
-fun RouteControls(mode: RouteColor, onMode: (RouteColor) -> Unit, onFullscreen: (() -> Unit)?) {
+fun RouteControls(
+    mode: RouteColor, onMode: (RouteColor) -> Unit,
+    showEvents: Boolean, onShowEvents: (Boolean) -> Unit,
+    onFullscreen: (() -> Unit)?,
+) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
         RouteColor.values().forEach { m ->
             if (m == mode) Button(onClick = { onMode(m) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp)) { Text(m.label) }
@@ -194,13 +206,38 @@ fun RouteControls(mode: RouteColor, onMode: (RouteColor) -> Unit, onFullscreen: 
         if (onFullscreen != null) TextButton(onClick = onFullscreen) { Text("Tam ekran") }
     }
     val lg = legendFor(mode)
-    if (lg.isNotEmpty()) Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        lg.forEach { (t, c) -> Legend(t, Color(c)) }
+    // "Olaylar" anahtarı + lejant; dar ekranda yatay kaydırılır
+    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        FilterChip(
+            selected = showEvents, onClick = { onShowEvents(!showEvents) },
+            label = { Text("Olaylar") },
+            leadingIcon = if (showEvents) {
+                { Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(FilterChipDefaults.IconSize)) }
+            } else null,
+        )
+        lg.forEach { (t, c) -> RouteLegend(t, Color(c)) }
+    }
+}
+
+/** Rota lejantı: açık renkler (ör. "düz" beyazı) seçilebilsin diye haritadaki gibi koyu konturlu. */
+@Composable
+private fun RouteLegend(t: String, c: Color) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Canvas(Modifier.size(12.dp)) {
+            drawCircle(Color(CASING_COLOR))
+            drawCircle(c, radius = size.minDimension / 2 - 2.dp.toPx())
+        }
+        Text(" $t", style = MaterialTheme.typography.bodySmall)
     }
 }
 
 @Composable
-fun FullscreenMap(r: TripReport, mode: RouteColor, onMode: (RouteColor) -> Unit, cursor: Int?, onClose: () -> Unit) {
+fun FullscreenMap(
+    r: TripReport, mode: RouteColor, onMode: (RouteColor) -> Unit,
+    showEvents: Boolean, onShowEvents: (Boolean) -> Unit,
+    cursor: Int?, onClose: () -> Unit,
+) {
     androidx.compose.ui.window.Dialog(
         onDismissRequest = onClose,
         properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
@@ -208,10 +245,10 @@ fun FullscreenMap(r: TripReport, mode: RouteColor, onMode: (RouteColor) -> Unit,
         androidx.compose.material3.Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             Column(Modifier.fillMaxSize().padding(top = 28.dp, bottom = 12.dp).padding(horizontal = 8.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.weight(1f)) { RouteControls(mode, onMode, null) }
+                    Box(Modifier.weight(1f)) { Column { RouteControls(mode, onMode, showEvents, onShowEvents, null) } }
                     Button(onClick = onClose) { Text("Kapat") }
                 }
-                RouteMap(r, mode, cursor, Modifier.fillMaxWidth().weight(1f))
+                RouteMap(r, mode, cursor, Modifier.fillMaxWidth().weight(1f), showEvents)
             }
         }
     }
