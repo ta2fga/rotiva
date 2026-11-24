@@ -92,16 +92,26 @@ class GearTest(unittest.TestCase):
         g2.update(T0, 2000, 43, skew=1.5)                    # çok eski devir: kullanılmaz
         self.assertIsNone(g2.state)
 
-    def test_learning_stays_bounded_and_old_model_discarded(self):
+    def test_single_odd_peak_stays_plausible_and_old_model_discarded(self):
+        """v3: öğrenme varsayılana bağlı değil; tek bir tuhaf tepe (32,8) bile akla yatkın bir şanzıman verir."""
         g = GearEstimator()
         t = T0
-        for _ in range(400):                                 # 4. ile 5. arası tuhaf oran (32,8): öğrenmeye girmez
+        for _ in range(400):
             g.update(t, 2000, 65.6)
             t += 0.3
-        for i, d in enumerate(DEFAULT_RATIOS):
-            self.assertLessEqual(abs(g.ratios[i] - d) / d, 0.18 + 1e-9)
+        r = g.ratios
+        self.assertTrue(all(1.15 - 1e-9 <= r[i + 1] / r[i] <= 2.1 + 1e-9 for i in range(4)), r)
+        self.assertTrue(0.6 <= g.scale <= 1.6)
+        self.assertIsNotNone(g.classify(2000, 65.6))          # öğrenilen tepe artık bir vites
         self.assertEqual(GearEstimator.from_dict({"ratios": [9, 16, 24, 31, 40], "counts": [1] * 5}).ratios,
                          DEFAULT_RATIOS)
+        self.assertEqual(GearEstimator.from_dict({"v": 2, "ratios": [9, 16, 24, 31, 40]}).ratios, DEFAULT_RATIOS)
+
+    def test_no_dead_gap_between_centers(self):
+        g = GearEstimator()
+        self.assertEqual(g.classify(2000, 32.2), 2)          # 16,1 = 2. merkezin %15 üstü: eski algoritmada boşluk
+        self.assertEqual(g.classify(2000, 37.0), 3)          # 18,5
+        self.assertIsNone(g.classify(2000, 34.7))            # 17,35 = 2-3 tam ortası: tutarsız (debriyaj)
 
     def test_shifts_detected(self):
         S, g = build_samples(1)
@@ -114,6 +124,72 @@ class GearTest(unittest.TestCase):
         _, g = build_samples(1)
         g2 = GearEstimator.from_dict(json.loads(json.dumps(g.to_dict())))
         self.assertEqual(g2.ratios, [round(r, 3) for r in g.ratios])
+        self.assertEqual(g2.counts, g.counts)
+        self.assertLess(sum(abs(x - y) for x, y in zip(g.hist, g2.hist)), 0.05 * len(g.hist))
+        g2.reestimate()                                      # kayıttan dönen histogram aynı oranları verir
+        for x, y in zip(g.ratios, g2.ratios):
+            self.assertAlmostEqual(x / y, 1.0, delta=0.005)
+
+
+D = DEFAULT_RATIOS
+CITY = [(4, 0, 0), (7, 14, 1), (12, 28, 2), (18, 42, 3), (30, 45, 3), (36, 55, 4), (56, 55, 4), (62, 40, 4),
+        (66, 38, 3), (76, 35, 3), (80, 25, 2), (95, 25, 2), (100, 30, 2), (104, 40, 3), (110, 50, 4),
+        (125, 52, 4), (128, 20, 4), (132, 0, 0), (136, 0, 0)]                 # şehir: 5. vites hiç yok
+NO_FIRST = [(4, 0, 0), (6, 9, 1), (10, 26, 2), (15, 34, 2), (21, 46, 3), (27, 52, 4), (45, 52, 4), (49, 25, 4),
+            (53, 0, 0), (58, 0, 0), (60, 9, 1), (63, 40, 2), (66, 58, 3), (71, 75, 4), (81, 106, 4),
+            (85, 106, 5), (93, 112, 5, None, 9.0), (101, 112, 5, None, 9.0), (105, 60, 5), (111, 46, 5, 82),
+            (117, 58, 5, 82), (127, 0, 0), (132, 0, 0)]                       # 1. vites yalnızca 0->9 km/s
+
+
+def drive(ratios, segs=None, loops=4, seed=5):
+    """Ayrı okunan devir/hız (0,15 sn kayma, gürültü, tamsayı hız) ile sürüş; son turda vites başına doğruluk."""
+    cyc, g, rnd = DriveCycle(ratios, segs), GearEstimator(), random.Random(seed)
+    t, ok, tot = 0.0, [0] * 5, [0] * 5
+    while t < cyc.LENGTH * loops:
+        d = cyc.at(t)
+        g.push_rpm(T0 + t, round((d["rpm"] + rnd.gauss(0, 12)) * 4) / 4)
+        d2 = cyc.at(t + 0.15)
+        g.push_speed(T0 + t + 0.15, round(d2["speed"]))
+        if t >= cyc.LENGTH * (loops - 1) and d2["gear"] and d2["speed"] >= 8:
+            tot[d2["gear"] - 1] += 1
+            ok[d2["gear"] - 1] += g.gear == d2["gear"]
+        t += 0.3 + rnd.uniform(-0.05, 0.05)
+    return g, [k / n if n else None for k, n in zip(ok, tot)]
+
+
+class GearDiscoveryTest(unittest.TestCase):
+    """Gerçek oranlar varsayılandan çok farklı araçlar: tepe bulma + şanzıman modeli doğru numaralamalı."""
+
+    def check(self, true, segs=None, from_data=(1, 2, 3, 4, 5), tol=0.03):
+        g, acc = drive(true, segs)
+        for i in range(5):
+            self.assertAlmostEqual(g.ratios[i] / true[i], 1.0, delta=tol if i + 1 in from_data else 0.06,
+                                   msg=(i + 1, g.ratios, true))
+            self.assertEqual(g.classify(2000, true[i] * 2), i + 1, (i + 1, g.ratios))   # her vites doğru
+            self.assertEqual(g.counts[i] > 0, i + 1 in from_data, (i + 1, g.counts))   # veriden mi, şekilden mi
+        for i, a in enumerate(acc):
+            if a is not None and i + 1 in from_data:
+                self.assertGreaterEqual(a, 0.6, (i + 1, acc))
+        self.assertTrue(g.confident)
+        return g, acc
+
+    def test_scaled_up_125(self):                           # bildirilen C-Elysée durumu: 2. hiç, 3->4, 4->5
+        g, acc = self.check([x * 1.25 for x in D])
+        self.assertGreaterEqual(acc[1], 0.6)                 # 2. vites artık görünüyor
+
+    def test_scaled_down_08(self):
+        self.check([x * 0.8 for x in D])
+
+    def test_non_uniform(self):
+        self.check([8.2, 16.8, 24.0, 33.0, 40.0])
+
+    def test_city_without_fifth(self):
+        g, _ = self.check([x * 1.25 for x in D], CITY, from_data=(2, 3, 4))
+        self.assertEqual(g.counts[4], 0)                     # 5. şekilden çıkarıldı
+
+    def test_no_steady_first(self):
+        g, _ = self.check([x * 1.25 for x in D], NO_FIRST, from_data=(2, 3, 4, 5))
+        self.assertEqual(g.counts[0], 0)
 
 
 class ScoringTest(unittest.TestCase):
