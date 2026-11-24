@@ -67,7 +67,7 @@ def _svg_chart(samples, events, w=860, h=260) -> str:
     return (f"<svg xmlns='http://www.w3.org/2000/svg' width='{w}' height='{h}' style='background:#f5f7fa'>"
             f"<rect x='{L}' y='{T}' width='{pw}' height='{ph}' fill='none' stroke='#c9d1de'/>"
             + line(lambda s: s.speed, 160.0, "#1f6feb") + line(lambda s: s.rpm, 4500.0, "#e8710a")
-            + line(lambda s: s.gear, 5.5, "#1a7f37", True) + ev +
+            + line(lambda s: s.gear, max([5] + [s.gear for s in samples if s.gear]) + 0.5, "#1a7f37", True) + ev +
             f"<text x='{L}' y='{h - 6}' font-size='11' fill='#6b7587'>0</text>"
             f"<text x='{w - 70}' y='{h - 6}' font-size='11' fill='#6b7587'>{int(span // 60)} dk</text></svg>"
             "<p class='muted'>Mavi: hız (0-160 km/s) &middot; Turuncu: devir (0-4500 d/dk) &middot; "
@@ -83,7 +83,7 @@ def build_trip_html(j: dict, samples: list) -> str:
     ev = [(f"{e['t']:.0f} sn", e["label"], e["text"]) for e in j.get("events", [])]
     when = datetime.fromtimestamp(j["start_ts"])
     rt = j.get("ratios") or []
-    cnt = j.get("gear_counts") or [0] * 5
+    cnt = j.get("gear_counts") or [0] * len(rt)
     ratios = ", ".join(f"{i + 1}. vites {r:.1f}{'' if cnt[i] >= 40 else ' (tahmin)'}" for i, r in enumerate(rt))
     return f"""<html><head><meta charset="utf-8"><style>{CSS}</style></head><body>
 <h1>{escape(APP_NAME)} - Sürüş Raporu</h1>

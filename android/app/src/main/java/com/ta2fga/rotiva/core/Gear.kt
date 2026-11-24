@@ -30,6 +30,9 @@ import kotlin.math.sqrt
  * yayınlanır: yeni vites ~0,5 sn ve en az 2 örnek sürmeli; tutarsız (debriyaj/geçiş) örneklerde son vites
  * kısa süre korunur. "Boşta" yalnızca gerçekten tutarsızlık varsa (duruyor ya da hareket hâlinde rölanti)
  * verilir; veri yoksa/eskiyse sonuç "bilinmiyor"dur.
+ *
+ * Vites sayısı (4..7, kullanıcı ayarı "Vites sayısı") [GearEstimator.n] ile verilir; şekil [defaultRatios]
+ * dizisinden gelir. Kayıtlı modelin vites sayısı ayardan farklıysa öğrenme atılır ve sıfırdan başlar.
  */
 
 /**
@@ -37,14 +40,36 @@ import kotlin.math.sqrt
  * veriden öğrenilir (araç bunlardan %60'a kadar farklı olabilir).
  */
 val DEFAULT_RATIOS = doubleArrayOf(7.5, 14.0, 21.5, 29.0, 37.0)
+/** Ayarda seçilebilen ileri vites sayıları ve varsayılan. */
+val GEAR_COUNTS = listOf(4, 5, 6, 7)
+const val DEFAULT_GEAR_COUNT = 5
+/** Model biçimi: v3 + isteğe bağlı "n" (vites sayısı; yoksa 5). Eski v3 kayıtları 5 vitesli olarak yüklenir. */
 const val GEAR_MODEL_VERSION = 3
 const val NEUTRAL = 0
-private val LD = DoubleArray(5) { ln(DEFAULT_RATIOS[it]) }                                // varsayılan şekil (log)
+
+/**
+ * Vites sayısına göre varsayılan oranlar (km/s per 1000 d/dk; yalnızca başlangıç ve ŞEKİL, gerçek oranlar veriden
+ * öğrenilir). Tipik küçük otomobil şanzımanları: 1. vites ~7..8, en üst ~31..41; adımlar alçak viteslerde büyük
+ * (~1,6..1,9), üstte küçük (~1,2..1,3). 5 ileri mevcut C-Elysée değerleridir (değişmedi).
+ *  - 4 ileri (eski/küçük şehir aracı, kısa son vites): 7,5 14 22 31             adımlar 1,87 1,57 1,41
+ *  - 6 ileri (modern dizel/benzinli):                  7,5 13 19,5 26 32,5 39    adımlar 1,73 1,50 1,33 1,25 1,20
+ *  - 7 ileri (uzun ekonomi vitesli):                   7 11,5 16,5 22 28 34 41   adımlar 1,64 1,43 1,33 1,27 1,21 1,21
+ * Tüm adımlar akla yatkınlık aralığında (1,15..2,1).
+ */
+fun defaultRatios(n: Int): DoubleArray = when (n) {
+    4 -> doubleArrayOf(7.5, 14.0, 22.0, 31.0)
+    6 -> doubleArrayOf(7.5, 13.0, 19.5, 26.0, 32.5, 39.0)
+    7 -> doubleArrayOf(7.0, 11.5, 16.5, 22.0, 28.0, 34.0, 41.0)
+    else -> DEFAULT_RATIOS.copyOf()
+}
+
+/** Geçersiz değerleri varsayılana çeker. */
+fun clampGearCount(n: Int): Int = if (n in GEAR_COUNTS) n else DEFAULT_GEAR_COUNT
 private val KER = DoubleArray(9) { val k = it - 4; exp(-0.5 * (k / 1.3) * (k / 1.3)) }   // düzleştirme çekirdeği
 
 data class GearCfg(
     // eşleme
-    val tol: Double = 0.10,            // uç vitesler (1. altı, 5. üstü) için oransal tolerans
+    val tol: Double = 0.10,            // uç vitesler (1. altı, en üst vitesin üstü) için oransal tolerans
     val gapFrac: Double = 0.75,        // komşu merkeze doğru: log yarı aralığın bu kadarı kabul (orta bant tutarsız)
     val tolMin: Double = 0.05,         // komşu tarafında en az bu kadar tolerans
     val tolSpeedQ: Double = 0.5,       // + tolSpeedQ/hız (OBD hızı tam sayı km/s)
@@ -69,7 +94,7 @@ data class GearCfg(
     val reestimateN: Int = 25,         // bu kadar yeni gözlemde bir merkezler yeniden kestirilir
     val peakMin: Double = 8.0, val peakFrac: Double = 0.012,   // tepe kütlesi en az max(peakMin, peakFrac*toplam)
     val peakMerge: Double = 0.10,      // log uzaklığı bundan küçük tepeler birleştirilir
-    val maxPeaks: Int = 7,
+    val maxPeaks: Int = 7,             // en az n+2 kullanılır (6-7 vitesli şanzımanlar)
     val shapeSigma: Double = 0.09,     // tepe ile ölçeklenmiş varsayılan şekil arası log sapma ölçeği
     val dropCost: Double = 4.0,        // atanmayan tepe cezası (sigma^2 biriminde)
     val scaleMin: Double = 0.6, val scaleMax: Double = 1.6, val scaleSigma: Double = 0.3, val scalePriorW: Double = 1.0,
@@ -165,9 +190,16 @@ class PairAligner(private val maxSkew: Double = 0.35, private val maxBracket: Do
     }
 }
 
-class GearEstimator(ratios: DoubleArray? = null, counts: IntArray? = null, val cfg: GearCfg = GearCfg()) {
-    var ratios: DoubleArray = if (validRatios(ratios)) ratios!!.copyOf() else DEFAULT_RATIOS.copyOf()
-    var counts: IntArray = if (validRatios(ratios) && counts != null && counts.size == 5) counts.copyOf() else IntArray(5)
+class GearEstimator(
+    ratios: DoubleArray? = null, counts: IntArray? = null, val cfg: GearCfg = GearCfg(), nGears: Int = DEFAULT_GEAR_COUNT,
+) {
+    /** İleri vites sayısı (4..7). Değiştirmek için [setGearCount] (öğrenme sıfırlanır). */
+    @Volatile var n: Int = clampGearCount(nGears)
+        private set
+    /** Varsayılan şekil (log), [n]'e göre. */
+    private var ld = DoubleArray(n) { ln(defaultRatios(n)[it]) }
+    @Volatile var ratios: DoubleArray = if (validRatios(ratios)) ratios!!.copyOf() else defaultRatios(n)
+    @Volatile var counts: IntArray = if (validRatios(ratios) && counts != null && counts.size == n) counts.copyOf() else IntArray(n)
     private val lmin = ln(cfg.histMin)
     private val bw = ln(1 + cfg.histBin)
     private val nb = ceil((ln(cfg.histMax) - lmin) / bw).toInt()
@@ -181,7 +213,7 @@ class GearEstimator(ratios: DoubleArray? = null, counts: IntArray? = null, val c
     private val win = ArrayDeque<Triple<Double, Double, Double>>()
     private val aligner = PairAligner(cfg.maxSkew, cfg.maxBracket)
 
-    /** Yayınlanan durum: 1..5 vites, [NEUTRAL] boşta/debriyaj, null bilinmiyor. */
+    /** Yayınlanan durum: 1..n vites, [NEUTRAL] boşta/debriyaj, null bilinmiyor. */
     var state: Int? = null
         private set
     private var cand: Int? = null
@@ -200,8 +232,8 @@ class GearEstimator(ratios: DoubleArray? = null, counts: IntArray? = null, val c
 
     /** Akla yatkın şanzıman: aralık içinde, artan, ardışık adımlar makul (varsayılana bağlı DEĞİL). */
     private fun validRatios(r: DoubleArray?): Boolean {
-        if (r == null || r.size != 5) return false
-        for (i in 0 until 5) {
+        if (r == null || r.size != n) return false
+        for (i in 0 until n) {
             if (r[i].isNaN() || r[i] < cfg.histMin || r[i] > cfg.histMax) return false
             if (i > 0 && (r[i] / r[i - 1] < 1.05 || r[i] / r[i - 1] > 2.6)) return false
         }
@@ -218,44 +250,60 @@ class GearEstimator(ratios: DoubleArray? = null, counts: IntArray? = null, val c
             if (x == floor(x)) h.put(x.toLong()) else h.put(x)
         }
         return JSONObject()
-            .put("v", GEAR_MODEL_VERSION)
+            .put("v", GEAR_MODEL_VERSION).put("n", n)
             .put("ratios", JSONArray(ratios.map { Math.round(it * 1000) / 1000.0 }))
             .put("counts", JSONArray(counts.toList()))
             .put("h0", h0).put("h", h)
     }
 
     @Synchronized fun reset() {
-        ratios = DEFAULT_RATIOS.copyOf(); counts = IntArray(5); dirty = true
+        ratios = defaultRatios(n); counts = IntArray(n); dirty = true
         hist = DoubleArray(nb); scale = 1.0; pending = 0
         win.clear(); aligner.clear(); state = null; cand = null; candN = 0
     }
 
+    /**
+     * Vites sayısını değiştirir: farklıysa öğrenme tamamen sıfırlanır (eski numaralama anlamsız). Kayıt sırasında
+     * da güvenle çağrılabilir (okuma döngüsüyle aynı kilit); değiştiyse true.
+     */
+    @Synchronized fun setGearCount(nGears: Int): Boolean {
+        val k = clampGearCount(nGears)
+        if (k == n) return false
+        n = k
+        ld = DoubleArray(k) { ln(defaultRatios(k)[it]) }
+        reset()
+        tracker.last = null                          // eski numaralı vitesten yeni numaralıya "geçiş" sayılmasın
+        return true
+    }
+
     /** Bu vitesin merkezi doğrudan veriden (yeterli gözlemli tepe) mi geliyor? */
-    fun learned(g: Int) = counts[g - 1] >= cfg.learnedCount
+    fun learned(g: Int) = counts.getOrNull(g - 1)?.let { it >= cfg.learnedCount } ?: false
 
     /** En az 3 vites veriden öğrenildi: numaralama (hangi tepe kaçıncı vites) güvenilir. */
-    val confident: Boolean get() = (1..5).count { learned(it) } >= 3
+    val confident: Boolean get() = (1..n).count { learned(it) } >= 3
 
     /** (en yakın merkez indeksi, log sapma) */
     private fun nearest(r: Double): Pair<Int, Double> {
         val lr = ln(r)
+        val rt = ratios
         var bi = 0; var be = Double.MAX_VALUE
-        for (k in 0 until 5) {
-            val e = abs(lr - ln(ratios[k]))
+        for (k in rt.indices) {
+            val e = abs(lr - ln(rt[k]))
             if (e < be) { be = e; bi = k }
         }
-        return bi to (lr - ln(ratios[bi]))
+        return bi to (lr - ln(rt[bi]))
     }
 
     /** i. merkezin d (log sapma) yönündeki toleransı: komşuya doğru yarı aralığın [GearCfg.gapFrac] kadarı. */
     private fun tolAt(i: Int, d: Double): Double {
+        val rt = ratios
         val j = i + if (d > 0) 1 else -1
-        if (j < 0 || j > 4) return ln(1 + cfg.tol)
-        val half = abs(ln(ratios[j] / ratios[i])) / 2
+        if (j < 0 || j > rt.size - 1) return ln(1 + cfg.tol)
+        val half = abs(ln(rt[j] / rt[i])) / 2
         return maxOf(ln(1 + cfg.tolMin), cfg.gapFrac * half)
     }
 
-    /** Tek (hizalı) örnek: 1..5, [NEUTRAL] ya da null (tutarsız/bilinmiyor). */
+    /** Tek (hizalı) örnek: 1..n, [NEUTRAL] ya da null (tutarsız/bilinmiyor). */
     fun classify(rpm: Double?, speed: Double?): Int? {
         if (rpm == null || speed == null || rpm < cfg.minRpm) return null
         if (speed < cfg.stopSpeed) return NEUTRAL
@@ -317,7 +365,7 @@ class GearEstimator(ratios: DoubleArray? = null, counts: IntArray? = null, val c
         for (p in cand.sortedWith(compareBy({ -it.second }, { it.first }))) {
             if (kept.all { abs(p.first - it.first) >= merge }) kept.add(p)
         }
-        val ks = kept.take(cfg.maxPeaks).sortedBy { it.first }
+        val ks = kept.take(maxOf(cfg.maxPeaks, this.n + 2)).sortedBy { it.first }   // 6-7 vites: yedek tepe payı
         val out = ArrayList<Pair<Double, Double>>()
         for ((k, p) in ks.withIndex()) {               // merkez: komşu tepelerin ortasına kadar ağırlıklı ortalama
             val i = p.first
@@ -332,8 +380,9 @@ class GearEstimator(ratios: DoubleArray? = null, counts: IntArray? = null, val c
 
     private class Fit(val cost: Double, val ratios: DoubleArray, val scale: Double, val mass: DoubleArray)
 
-    /** assign[j]: tepe j'nin vites indeksi (0..4) ya da -1 (atanmadı). Akla yatkın değilse null. */
+    /** assign[j]: tepe j'nin vites indeksi (0..n-1) ya da -1 (atanmadı). Akla yatkın değilse null. */
     private fun fit(pk: List<Pair<Double, Double>>, assign: IntArray): Fit? {
+        val n = n; val LD = ld
         val w = DoubleArray(pk.size) { sqrt(pk[it].second) }
         var sw = 0.0; var sd = 0.0
         for (j in pk.indices) if (assign[j] >= 0) { sw += w[j]; sd += w[j] * (pk[j].first - LD[assign[j]]) }
@@ -345,12 +394,12 @@ class GearEstimator(ratios: DoubleArray? = null, counts: IntArray? = null, val c
             else { val e = (pk[j].first - LD[assign[j]] - ls) / cfg.shapeSigma; cost += w[j] * e * e }
         }
         // vites başına log düzeltme: veri varsa tepenin kendisi, yoksa komşu düzeltmelerinden (şekil korunur)
-        val corr = DoubleArray(5) { Double.NaN }
-        val mass = DoubleArray(5)
+        val corr = DoubleArray(n) { Double.NaN }
+        val mass = DoubleArray(n)
         for (j in pk.indices) if (assign[j] >= 0) { corr[assign[j]] = pk[j].first - LD[assign[j]]; mass[assign[j]] = pk[j].second }
-        val known = (0 until 5).filter { !corr[it].isNaN() }
+        val known = (0 until n).filter { !corr[it].isNaN() }
         val full = corr.copyOf()
-        for (g in 0 until 5) {
+        for (g in 0 until n) {
             if (!full[g].isNaN()) continue
             val lo = known.lastOrNull { it < g }
             val hi = known.firstOrNull { it > g }
@@ -360,33 +409,55 @@ class GearEstimator(ratios: DoubleArray? = null, counts: IntArray? = null, val c
                 else -> corr[hi!!]
             }
         }
-        val r = DoubleArray(5) { exp(LD[it] + full[it]) }
-        for (g in 1 until 5) { val st = r[g] / r[g - 1]; if (st < cfg.stepMin || st > cfg.stepMax) return null }
+        val r = DoubleArray(n) { exp(LD[it] + full[it]) }
+        for (g in 1 until n) { val st = r[g] / r[g - 1]; if (st < cfg.stepMin || st > cfg.stepMax) return null }
         return Fit(cost, r, exp(ls), mass)
     }
 
-    /** Histogramdan 5 merkezi yeniden kestirir (tüm artan atamalar denenir); değiştiyse true. */
+    /** Son kestirimde değerlendirilen (budanmamış) atama sayısı (test/izleme). */
+    var fitCalls = 0
+        private set
+
+    /**
+     * Histogramdan n merkezi yeniden kestirir (tüm artan atamalar denenir); değiştiyse true.
+     *
+     * Budama: art arda atanan iki tepe (vites g1 < g2) arasındaki log oran (g2-g1)·ln(stepMin)..(g2-g1)·ln(stepMax)
+     * dışındaysa o dal [fit]'in adım denetiminden zaten geçemez (aradaki adımların çarpımı tam o orandır); atlanır.
+     * Sonuç budamasız aramayla aynıdır, ama 7 tepe x 7 vites için C(14,7)=3432 yerine çok daha az atama denenir.
+     */
     @Synchronized fun reestimate(): Boolean {
         pending = 0
         val pk = peaks()
         if (pk.isEmpty()) return false
+        val n = n
         var best: Fit? = null
         val assign = IntArray(pk.size) { -1 }
-        fun rec(j: Int, nextG: Int) {
+        val lMin = ln(cfg.stepMin); val lMax = ln(cfg.stepMax)
+        var calls = 0
+        fun rec(j: Int, nextG: Int, lastJ: Int) {
             if (j == pk.size) {
+                calls++
                 if (nextG > 0) fit(pk, assign)?.let { f -> if (best == null || f.cost < best!!.cost) best = f }
                 return
             }
             assign[j] = -1
-            rec(j + 1, nextG)
-            for (g in nextG until 5) { assign[j] = g; rec(j + 1, g + 1) }
+            rec(j + 1, nextG, lastJ)
+            for (g in nextG until n) {
+                if (lastJ >= 0) {
+                    val d = g - assign[lastJ]; val st = pk[j].first - pk[lastJ].first
+                    if (st < d * lMin - 1e-9 || st > d * lMax + 1e-9) continue
+                }
+                assign[j] = g; rec(j + 1, g + 1, j)
+            }
             assign[j] = -1
         }
-        rec(0, 0)
+        rec(0, 0, -1)
+        fitCalls = calls
         val b = best ?: return false
-        val changed = (0 until 5).any { abs(b.ratios[it] - ratios[it]) / ratios[it] > 1e-4 }
+        val old = ratios
+        val changed = old.size != n || (0 until n).any { abs(b.ratios[it] - old[it]) / old[it] > 1e-4 }
         ratios = b.ratios; scale = b.scale
-        counts = IntArray(5) { b.mass[it].roundToInt() }
+        counts = IntArray(n) { b.mass[it].roundToInt() }
         dirty = true
         return changed
     }
@@ -436,16 +507,20 @@ class GearEstimator(ratios: DoubleArray? = null, counts: IntArray? = null, val c
     @Synchronized fun stateAt(now: Double): Int? = if (now - lastPairT > cfg.staleS) null else state
     fun gearAt(now: Double): Int? = stateAt(now)?.takeIf { it >= 1 }
 
-    /** Gösterim: "1".."5", "N" (boşta/debriyaj) ya da "—" (bilinmiyor). */
+    /** Gösterim: "1".."n", "N" (boşta/debriyaj) ya da "—" (bilinmiyor). */
     fun label(now: Double): String = gearLabel(stateAt(now))
 
     companion object {
-        fun fromJson(j: JSONObject?): GearEstimator {
-            // eski (varsayılana bağlı, v1/v2) öğrenme atılır
-            if (j == null || j.optInt("v", 1) != GEAR_MODEL_VERSION) return GearEstimator()
+        /**
+         * [nGears]: ayardaki vites sayısı. Eski (varsayılana bağlı, v1/v2) öğrenme ve vites sayısı ayardan farklı
+         * model atılır (sıfırdan öğrenme). "n" alanı olmayan v3 kaydı 5 vitesli sayılır.
+         */
+        fun fromJson(j: JSONObject?, nGears: Int = DEFAULT_GEAR_COUNT): GearEstimator {
+            val n = clampGearCount(nGears)
+            if (j == null || j.optInt("v", 1) != GEAR_MODEL_VERSION || j.optInt("n", 5) != n) return GearEstimator(nGears = n)
             val r = j.optJSONArray("ratios")?.let { a -> DoubleArray(a.length()) { a.getDouble(it) } }
             val c = j.optJSONArray("counts")?.let { a -> IntArray(a.length()) { a.getInt(it) } }
-            val g = GearEstimator(r, c)
+            val g = GearEstimator(r, c, nGears = n)
             val h0 = j.optInt("h0", 0)
             j.optJSONArray("h")?.let { a ->
                 for (i in 0 until a.length()) if (h0 + i in g.hist.indices) g.hist[h0 + i] = maxOf(0.0, a.optDouble(i, 0.0))

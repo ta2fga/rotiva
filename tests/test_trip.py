@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("APPDATA", tempfile.mkdtemp())
 
 from app import coach, scoring                              # noqa: E402
-from app.gear import DEFAULT_RATIOS, NEUTRAL, GearEstimator     # noqa: E402
+from app.gear import DEFAULT_RATIOS, GEAR_COUNTS, NEUTRAL, GearEstimator, default_ratios     # noqa: E402
 from app.scoring import Sample                              # noqa: E402
 from app.simulator import DriveCycle                        # noqa: E402
 from app.trip import TripRecorder, list_trips, read_samples  # noqa: E402
@@ -190,6 +190,111 @@ class GearDiscoveryTest(unittest.TestCase):
     def test_no_steady_first(self):
         g, _ = self.check([x * 1.25 for x in D], NO_FIRST, from_data=(2, 3, 4, 5))
         self.assertEqual(g.counts[0], 0)
+
+
+def drive_n(true, loops=4, seed=5):
+    """Genel profilli (DriveCycle.for_gearbox) sürüş, len(true) vitesli tahminciyle (Gear.kt driveN ile aynı)."""
+    n = len(true)
+    cyc, g, rnd = DriveCycle.for_gearbox(true), GearEstimator(n=n), random.Random(seed)
+    t, ok, tot, calls = 0.0, [0] * n, [0] * n, 0
+    while t < cyc.LENGTH * loops:
+        d = cyc.at(t)
+        g.push_rpm(T0 + t, round((d["rpm"] + rnd.gauss(0, 12)) * 4) / 4)
+        d2 = cyc.at(t + 0.15)
+        g.push_speed(T0 + t + 0.15, round(d2["speed"]))
+        calls = max(calls, g.fit_calls)
+        if t >= cyc.LENGTH * (loops - 1) and d2["gear"] and d2["speed"] >= 8:
+            tot[d2["gear"] - 1] += 1
+            ok[d2["gear"] - 1] += g.gear == d2["gear"]
+        t += 0.3 + rnd.uniform(-0.05, 0.05)
+    return g, [k / m if m else None for k, m in zip(ok, tot)], calls
+
+
+class GearCountTest(unittest.TestCase):
+    """Ayar "Vites sayısı" (4..7): aynı algoritma N vites için."""
+
+    def check(self, true):
+        n = len(true)
+        g, acc, calls = drive_n(true)
+        msg = (n, g.ratios, true, g.counts, acc, calls)
+        self.assertEqual((g.n, len(g.ratios), len(g.counts)), (n, n, n))
+        for i in range(n):
+            self.assertAlmostEqual(g.ratios[i] / true[i], 1.0, delta=0.03, msg=msg)
+            self.assertEqual(g.classify(2000, true[i] * 2), i + 1, msg)
+            self.assertTrue(g.learned(i + 1), msg)
+            self.assertGreaterEqual(acc[i], 0.75, msg)
+        self.assertTrue(g.confident)
+        self.assertTrue(1 <= calls <= 4000, msg)          # budanmış atama araması küçük kalır
+        return g
+
+    def test_defaults(self):
+        self.assertEqual(default_ratios(5), DEFAULT_RATIOS)          # 5 ileri değişmedi
+        for n in GEAR_COUNTS:
+            r = default_ratios(n)
+            self.assertEqual(len(r), n)
+            self.assertTrue(all(1.15 <= r[i] / r[i - 1] <= 2.1 for i in range(1, n)), r)
+            g = GearEstimator(n=n)
+            self.assertEqual(g.ratios, r)
+            for i in range(n):
+                self.assertEqual(g.classify(2000, r[i] * 2), i + 1)
+            self.assertIsNone(g.classify(2000, 2 * (r[0] * r[1]) ** 0.5))   # 1-2 tam ortası: tutarsız
+        self.assertEqual(GearEstimator(n=3).n, 5)
+
+    def test_four_speed(self):
+        self.check([8.3, 15.2, 23.6, 33.5])
+
+    def test_five_speed_generic_cycle(self):
+        self.check(DriveCycle.TRUE_RATIOS)
+
+    def test_six_speed(self):
+        self.check([7.9, 13.8, 20.6, 27.4, 34.2, 41.5])
+
+    def test_six_speed_scaled(self):
+        self.check([x * 1.2 for x in default_ratios(6)])
+
+    def test_seven_speed(self):
+        self.check([7.4, 12.0, 17.3, 23.0, 29.2, 35.4, 42.6])
+
+    def test_change_resets(self):
+        g, _, _ = drive_n(DriveCycle.TRUE_RATIOS)
+        self.assertTrue(g.confident)
+        self.assertFalse(g.set_gear_count(5))
+        self.assertTrue(g.set_gear_count(6))
+        self.assertEqual((g.n, g.ratios, g.counts, sum(g.hist), g.state), (6, default_ratios(6), [0] * 6, 0.0, None))
+        self.assertFalse(g.confident)
+        true = [7.9, 13.8, 20.6, 27.4, 34.2, 41.5]
+        cyc, t = DriveCycle.for_gearbox(true), 1000.0
+        while t < 1000.0 + cyc.LENGTH * 3:
+            d = cyc.at(t)
+            g.update(T0 + t, d["rpm"], d["speed"])
+            t += 0.25
+        for a, b in zip(g.ratios, true):
+            self.assertAlmostEqual(a / b, 1.0, delta=0.04, msg=g.ratios)
+        d = json.loads(json.dumps(g.to_dict()))
+        self.assertEqual(d["n"], 6)
+        self.assertEqual(GearEstimator.from_dict(d, n=6).ratios, [round(r, 3) for r in g.ratios])
+        other = GearEstimator.from_dict(d, n=5)                     # ayar farklı: öğrenme atılır
+        self.assertEqual((other.n, other.ratios, sum(other.hist)), (5, DEFAULT_RATIOS, 0.0))
+
+    def test_round_trip_and_old_v3(self):
+        for n in GEAR_COUNTS:
+            g, _, _ = drive_n([x * 1.1 for x in default_ratios(n)], loops=2)
+            g2 = GearEstimator.from_dict(json.loads(json.dumps(g.to_dict())), n=n)
+            self.assertEqual((g2.n, g2.counts), (n, g.counts))
+            g2.reestimate()
+            for x, y in zip(g.ratios, g2.ratios):
+                self.assertAlmostEqual(x / y, 1.0, delta=0.005)
+        old = {"v": 3, "ratios": [9.2, 17.5, 26.9, 36.2, 46.3], "counts": [50, 60, 70, 80, 90], "h0": 0, "h": []}
+        g5 = GearEstimator.from_dict(old)                           # "n" yok: 5 vitesli yüklenir
+        self.assertEqual((g5.n, g5.ratios, g5.counts), (5, old["ratios"], old["counts"]))
+        self.assertEqual(GearEstimator.from_dict(old, n=6).ratios, default_ratios(6))
+
+    def test_parity_with_kotlin_cycle(self):
+        """segs_for, Simulator.kt segsFor ile aynı profili üretir (4 vites örneği)."""
+        s = DriveCycle.segs_for([8.0, 15.0, 23.0, 32.0])
+        self.assertEqual(s[0], (4.0, 0.0, 0))
+        self.assertEqual(s[1], (7.0, 20.0, 1))
+        self.assertEqual(s[-1][0], 4 + 8 * 4 + 12 + 6 * 2 + 8)
 
 
 class ScoringTest(unittest.TestCase):

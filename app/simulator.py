@@ -54,6 +54,45 @@ class DriveCycle:
             self.SEGS = list(segs)
             self.LENGTH = float(segs[-1][0])
 
+    @property
+    def n_gears(self) -> int:
+        return len(self.ratios)
+
+    @staticmethod
+    def segs_for(ratios) -> list:
+        """Herhangi bir vites sayısı (len(ratios)) için genel sürüş profili: kalkış, her viteste hızlanma (~2500
+        d/dk'ya) + kararlı bölüm, en üstte seyir, ara viteslere küçülterek (~2000 d/dk) şehir bölümü, duruş.
+        Android core/Simulator.kt DriveCycle.segsFor ile aynı."""
+        out, t = [], 4.0
+        out.append((t, 0.0, 0))
+        for g in range(1, len(ratios) + 1):
+            v = ratios[g - 1] * 2.5
+            t += 3
+            out.append((t, v, g))
+            t += 5
+            out.append((t, v, g))
+        top = len(ratios)
+        t += 8
+        out.append((t, ratios[top - 1] * 2.5, top, None, 3.0))
+        t += 4
+        out.append((t, ratios[top - 1] * 1.6, top))
+        for g in range(top - 1, 1, -1):
+            v = ratios[g - 1] * 2.0
+            t += 2
+            out.append((t, v, g))
+            t += 4
+            out.append((t, v, g))
+        t += 4
+        out.append((t, 0.0, 0))
+        t += 4
+        out.append((t, 0.0, 0))
+        return out
+
+    @classmethod
+    def for_gearbox(cls, ratios) -> "DriveCycle":
+        """len(ratios) (4..7) vitesli araç için genel profilli döngü."""
+        return cls(ratios, cls.segs_for(ratios))
+
     def at(self, t: float) -> dict:
         tc = t % self.LENGTH
         prev_t, prev_v, prev_g = 0.0, 0.0, 0

@@ -10,7 +10,8 @@ def settings_path() -> str:
     return os.path.join(data_dir(), "settings.json")
 
 
-DEFAULTS = {"dashboard": ["rpm", "speed", "coolant", "load", "frp", "atrv"], "conn": {}, "theme": "Gece Mavisi"}
+DEFAULTS = {"dashboard": ["rpm", "speed", "coolant", "load", "frp", "atrv"], "conn": {}, "theme": "Gece Mavisi",
+            "gear_count": 5}     # ileri vites sayısı (4..7); değişince vites öğrenmesi sıfırlanır
 
 
 class Settings:

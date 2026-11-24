@@ -32,7 +32,39 @@ class DriveCycle(val ratios: DoubleArray = TRUE_RATIOS, val segs: List<Seg> = SE
             Seg(110.0, 46.0, 5, 82.0), Seg(116.0, 58.0, 5, 82.0),
             Seg(126.0, 0.0, 0), Seg(131.0, 0.0, 0),
         )
+
+        /**
+         * Herhangi bir vites sayısı (len(ratios)) için genel sürüş profili: kalkış, her viteste hızlanma (~2500 d/dk'ya)
+         * + kararlı bölüm, en üstte seyir, ara viteslere küçülterek (~2000 d/dk) şehir bölümü, duruş.
+         * Desktop app/simulator.py DriveCycle.segs_for ile aynı.
+         */
+        fun segsFor(ratios: DoubleArray): List<Seg> {
+            val out = ArrayList<Seg>()
+            var t = 4.0
+            out.add(Seg(t, 0.0, 0))
+            for (g in 1..ratios.size) {
+                val v = ratios[g - 1] * 2.5
+                t += 3; out.add(Seg(t, v, g))
+                t += 5; out.add(Seg(t, v, g))
+            }
+            val top = ratios.size
+            t += 8; out.add(Seg(t, ratios[top - 1] * 2.5, top, null, 3.0))
+            t += 4; out.add(Seg(t, ratios[top - 1] * 1.6, top))
+            for (g in top - 1 downTo 2) {
+                val v = ratios[g - 1] * 2.0
+                t += 2; out.add(Seg(t, v, g))
+                t += 4; out.add(Seg(t, v, g))
+            }
+            t += 4; out.add(Seg(t, 0.0, 0))
+            t += 4; out.add(Seg(t, 0.0, 0))
+            return out
+        }
+
+        /** [ratios] uzunluğunda (4..7) vitesli araç için genel profilli döngü. */
+        fun forGearbox(ratios: DoubleArray) = DriveCycle(ratios, segsFor(ratios))
     }
+
+    val nGears: Int get() = ratios.size
 
     fun at(t: Double): Point {
         val tc = t % length

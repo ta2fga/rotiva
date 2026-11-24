@@ -146,7 +146,7 @@ fun ReportBody(r: TripReport, ctx: Context) {
                 ProfileChart(r, ChartKind.SPEED, cursor, { cursor = it }, ex.series[0], ex.series[2], ex.series[1], ex.crit, ex.border,
                     MaterialTheme.colorScheme.onSurfaceVariant, Modifier.fillMaxWidth().height(230.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(top = 4.dp)) {
-                    Legend("Hız", ex.series[0]); Legend("Devir (0-4000+)", ex.series[2]); Legend("Vites (0-6)", ex.series[1]); Legend("Olay", ex.crit)
+                    Legend("Hız", ex.series[0]); Legend("Devir (0-4000+)", ex.series[2]); Legend("Vites", ex.series[1]); Legend("Olay", ex.crit)
                 }
             }
         }

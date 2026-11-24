@@ -259,7 +259,7 @@ fun PageDrive(onOpenConnect: () -> Unit) {
         RowSpaced {
             BigStat("Devir", live.rpm?.let { "%d".format(Math.round(it)) } ?: "—", "d/dk", Modifier.weight(1f),
                 if ((live.rpm ?: 0.0) > 3500) ex.crit else MaterialTheme.colorScheme.onSurface)
-            BigStat("Vites", live.gearLabel, "", Modifier.weight(1f))   // 1-5, N (boşta/debriyaj), — (bilinmiyor)
+            BigStat("Vites", live.gearLabel, "", Modifier.weight(1f))   // 1..n (ayar: vites sayısı), N (boşta/debriyaj), — (bilinmiyor)
             BigStat("Yükseklik", live.alt?.let { "%d".format(Math.round(it)) } ?: "—", "m", Modifier.weight(1f))
         }
         RowSpaced {
@@ -371,7 +371,9 @@ fun PageSettings() {
     val auto by p.autoStart.collectAsStateWithLifecycle()
     val su by p.speedUnit.collectAsStateWithLifecycle()
     val tu by p.tempUnit.collectAsStateWithLifecycle()
+    val gearCount by p.gearCount.collectAsStateWithLifecycle()
     var resetGear by remember { mutableStateOf(false) }
+    var askGears by remember { mutableStateOf<Int?>(null) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("Ayarlar", fontSize = 24.sp, fontWeight = FontWeight.Bold)
         SectionTitle("Tema")
@@ -397,6 +399,9 @@ fun PageSettings() {
         RowSpaced { TempUnit.values().forEach { u -> Chip(u.label, tu == u, Modifier.weight(1f)) { p.setTempUnit(u) } } }
         Text("Yakıt ray basıncı her zaman bar olarak gösterilir.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         SectionTitle("Vites tahmini")
+        Text("Vites sayısı (ileri)", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        RowSpaced { GEAR_COUNTS.forEach { k -> Chip("$k", gearCount == k, Modifier.weight(1f)) { if (k != gearCount) askGears = k } } }
+        Text("Değiştirince vites öğrenmesi sıfırlanır.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text("Oranlar (km/s / 1000 d/dk): " + Engine.gearRatios().joinToString("  ") { tr1(it, 1) }, style = MaterialTheme.typography.bodyMedium)
         Text("Öğrenme sayacı: " + Engine.gearCounts().joinToString(" / "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         OutlinedButton(onClick = { resetGear = true }) { Text("Vites öğrenmesini sıfırla") }
@@ -408,6 +413,13 @@ fun PageSettings() {
         text = { Text("Öğrenilmiş vites oranları varsayılana döner.") },
         confirmButton = { TextButton(onClick = { Engine.resetGear(); resetGear = false }) { Text("Sıfırla") } },
         dismissButton = { TextButton(onClick = { resetGear = false }) { Text("Vazgeç") } })
+    askGears?.let { k ->
+        AlertDialog(
+            onDismissRequest = { askGears = null }, title = { Text("Vites sayısı: $k") },
+            text = { Text("Vites sayısı $k olarak değiştirilecek. Öğrenilmiş vites oranları silinir ve öğrenme baştan başlar.") },
+            confirmButton = { TextButton(onClick = { Engine.setGearCount(k); askGears = null }) { Text("Değiştir") } },
+            dismissButton = { TextButton(onClick = { askGears = null }) { Text("Vazgeç") } })
+    }
 }
 
 @Composable
