@@ -123,7 +123,7 @@ fun reportHtml(r: TripReport, title: String = "Sürüş Raporu"): String {
         sb.append(polyline(sp, 600.0, 230.0, "#3b82f6", xr = 0.0 to tMax, yr = 0.0 to max(120.0, sp.maxOfOrNull { it.second } ?: 120.0)))
         sb.append(polyline(rp, 600.0, 230.0, "#f97316", xr = 0.0 to tMax, yr = 0.0 to max(4000.0, rp.maxOfOrNull { it.second } ?: 4000.0)))
         val gp = se.filter { it.gear != null }.map { it.t to it.gear!!.toDouble() }
-        sb.append(polyline(gp, 600.0, 230.0, "#22c55e", xr = 0.0 to tMax, yr = 0.0 to 6.0))
+        sb.append(polyline(gp, 600.0, 230.0, "#22c55e", xr = 0.0 to tMax, yr = 0.0 to max(6.0, (gp.maxOfOrNull { it.second } ?: 0.0) + 1)))
         for (e in r.result.events) {
             val x = e.t / max(tMax, 1.0) * 600
             sb.append("<line x1=\"${f(x)}\" y1=\"0\" x2=\"${f(x)}\" y2=\"230\" stroke=\"#ef4444\" stroke-opacity=\"0.5\"/>")

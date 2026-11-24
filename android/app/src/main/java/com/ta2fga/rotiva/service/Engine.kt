@@ -113,7 +113,7 @@ object Engine {
         prefs = Prefs(app)
         store = TripStore(File(app.filesDir, "trips"))
         scanner = BleScanner(app)
-        gearEst = GearEstimator.fromJson(prefs.gearJson)
+        gearEst = GearEstimator.fromJson(prefs.gearJson, prefs.gearCount.value)   // vites sayısı farklıysa sıfırdan
         recorder = TripRecorder(store, TripCfg(autoStart = prefs.autoStart.value), gearEst)
         scope.launch { prefs.autoStart.collect { recorder.cfg.autoStart = it } }
         unfinished.value = recorder.findUnfinished()
@@ -520,6 +520,16 @@ object Engine {
     fun discardUnfinished() { recorder.discardUnfinished(); unfinished.value = null }
 
     fun resetGear() { gearEst.reset(); savePrefsGear() }
+
+    /**
+     * Ayar "Vites sayısı": değişirse öğrenme sıfırlanır. Tahminci nesnesi aynı kalır (kaydedici de aynı nesneyi
+     * kullanır); [GearEstimator.setGearCount] okuma döngüsüyle aynı kilitte çalıştığı için kayıt sırasında da güvenli.
+     */
+    fun setGearCount(n: Int) {
+        val k = clampGearCount(n)
+        if (gearEst.setGearCount(k)) { savePrefsGear(); gearEst.dirty = false }
+        prefs.setGearCount(k)                         // en son: arayüz yeniden çizilince yeni oranları görür
+    }
     fun gearRatios(): DoubleArray = gearEst.ratios
     fun gearCounts(): IntArray = gearEst.counts
 

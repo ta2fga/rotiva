@@ -15,7 +15,10 @@ Sınıflama toleransı komşu merkezler arasındaki (log) yarı aralığa göred
 `gap_frac` kadarına kadar kabul edilir, tam ortadaki dar bant (debriyaj kaydırma/geçiş) tutarsızdır.
 Sonuç histerezisle yayınlanır: yeni vites ~0,5 sn ve en az 2 örnek sürmeli; tutarsız (debriyaj/geçiş)
 örneklerde son vites kısa süre korunur. "Boşta" (NEUTRAL) yalnızca duruyorken ya da hareket hâlinde rölantide
-oran uyuşmuyorsa verilir; veri yoksa/eskiyse sonuç bilinmiyor (None)."""
+oran uyuşmuyorsa verilir; veri yoksa/eskiyse sonuç bilinmiyor (None).
+
+İleri vites sayısı (4..7, ayar "Vites sayısı") GearEstimator(n=...) ile verilir; şekil default_ratios(n)'den gelir.
+Kayıtlı modelin vites sayısı ayardan farklıysa öğrenme atılır ve sıfırdan başlar."""
 from __future__ import annotations
 
 import math
@@ -26,14 +29,39 @@ from typing import Optional
 # 2017 C-Elysée 1.6 HDi 92 hp, BE4 5 ileri: km/s per 1000 d/dk (yalnızca başlangıç ve ŞEKİL; gerçek oranlar
 # veriden öğrenilir, araç bunlardan %60'a kadar farklı olabilir)
 DEFAULT_RATIOS = [7.5, 14.0, 21.5, 29.0, 37.0]
-MODEL_VERSION = 3
+GEAR_COUNTS = (4, 5, 6, 7)          # ayarda seçilebilen ileri vites sayıları
+DEFAULT_GEAR_COUNT = 5
+MODEL_VERSION = 3                   # v3 + isteğe bağlı "n" (yoksa 5): eski v3 kayıtları 5 vitesli yüklenir
 NEUTRAL = 0
-_LD = [math.log(x) for x in DEFAULT_RATIOS]                     # varsayılan şekil (log)
+
+# Vites sayısına göre varsayılan oranlar (yalnızca başlangıç ve ŞEKİL; Gear.kt defaultRatios ile aynı). Tipik
+# küçük otomobil: 1. ~7..8, en üst ~31..41; adımlar alçakta büyük (~1,6..1,9), üstte küçük (~1,2..1,3).
+#   4 ileri: adımlar 1,87 1,57 1,41 · 6 ileri: 1,73 1,50 1,33 1,25 1,20 · 7 ileri: 1,64 1,43 1,33 1,27 1,21 1,21
+_DEFAULTS = {
+    4: [7.5, 14.0, 22.0, 31.0],
+    5: DEFAULT_RATIOS,
+    6: [7.5, 13.0, 19.5, 26.0, 32.5, 39.0],
+    7: [7.0, 11.5, 16.5, 22.0, 28.0, 34.0, 41.0],
+}
+
+
+def clamp_gear_count(n) -> int:
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return DEFAULT_GEAR_COUNT
+    return n if n in GEAR_COUNTS else DEFAULT_GEAR_COUNT
+
+
+def default_ratios(n: int = DEFAULT_GEAR_COUNT) -> list:
+    return list(_DEFAULTS[clamp_gear_count(n)])
+
+
 _KER = [math.exp(-0.5 * (k / 1.3) ** 2) for k in range(-4, 5)]   # histogram düzleştirme çekirdeği
 
 CFG = dict(
     # eşleme
-    tol=0.10,             # uç vitesler (1. altı, 5. üstü) için oransal tolerans
+    tol=0.10,             # uç vitesler (1. altı, en üst vitesin üstü) için oransal tolerans
     gap_frac=0.75,        # komşu merkeze doğru: log yarı aralığın bu kadarı kabul (ortadaki dar bant tutarsız)
     tol_min=0.05,         # komşu tarafında en az bu kadar tolerans
     tol_speed_q=0.5,      # + bu/hız (OBD hızı tam sayı km/s)
@@ -55,7 +83,7 @@ CFG = dict(
     reestimate_n=25,      # bu kadar yeni gözlemde bir merkezler yeniden kestirilir
     peak_min=8.0, peak_frac=0.012,   # tepe kütlesi en az max(peak_min, peak_frac*toplam)
     peak_merge=0.10,      # log uzaklığı bundan küçük tepeler birleştirilir
-    max_peaks=7,
+    max_peaks=7,          # en az n+2 kullanılır (6-7 vitesli şanzımanlar)
     shape_sigma=0.09,     # tepe ile ölçeklenmiş varsayılan şekil arası log sapma ölçeği
     drop_cost=4.0,        # atanmayan tepe cezası (sigma^2 biriminde)
     scale_min=0.6, scale_max=1.6, scale_sigma=0.3, scale_prior_w=1.0,
@@ -180,11 +208,13 @@ class PairAligner:
 
 
 class GearEstimator:
-    def __init__(self, ratios=None, counts=None, cfg: dict = None, hist=None):
+    def __init__(self, ratios=None, counts=None, cfg: dict = None, hist=None, n: int = DEFAULT_GEAR_COUNT):
         self.cfg = dict(CFG, **(cfg or {}))
+        self.n = clamp_gear_count(n)                      # ileri vites sayısı; değiştirmek için set_gear_count
+        self._ld = [math.log(x) for x in default_ratios(self.n)]   # varsayılan şekil (log)
         ok = self._valid(ratios)
-        self.ratios = [float(r) for r in ratios] if ok else list(DEFAULT_RATIOS)
-        self.counts = [int(x) for x in counts] if ok and counts and len(counts) == 5 else [0] * 5
+        self.ratios = [float(r) for r in ratios] if ok else default_ratios(self.n)
+        self.counts = [int(x) for x in counts] if ok and counts and len(counts) == self.n else [0] * self.n
         c = self.cfg
         self._lmin = math.log(c["hist_min"])
         self._bw = math.log(1 + c["hist_bin"])
@@ -194,9 +224,10 @@ class GearEstimator:
             self.hist = [max(0.0, float(x)) for x in hist]
         self.scale = 1.0                      # son kestirimde varsayılan şekle göre ölçek
         self._pending = 0                     # son kestirimden beri yeni gözlem
+        self.fit_calls = 0                    # son kestirimde değerlendirilen atama sayısı
         self.win: deque = deque(maxlen=64)
         self.aligner = PairAligner(self.cfg["max_skew"], self.cfg["max_bracket"])
-        self.state: Optional[int] = None       # 1..5, NEUTRAL, None (bilinmiyor)
+        self.state: Optional[int] = None       # 1..n, NEUTRAL, None (bilinmiyor)
         self._cand = None
         self._cand_n = 0
         self._cand_t0 = 0.0
@@ -208,9 +239,9 @@ class GearEstimator:
     def _valid(self, r) -> bool:
         """Akla yatkın şanzıman: aralık içinde, artan, ardışık adımlar makul (varsayılana bağlı DEĞİL)."""
         c = self.cfg
-        if not r or len(r) != 5:
+        if not r or len(r) != self.n:
             return False
-        for i in range(5):
+        for i in range(self.n):
             x = r[i]
             if x is None or x != x or not c["hist_min"] <= x <= c["hist_max"]:
                 return False
@@ -244,15 +275,18 @@ class GearEstimator:
         nz = [i for i, x in enumerate(self.hist) if x >= 0.05]
         h0 = nz[0] if nz else 0
         h = [round(x, 1) for x in self.hist[h0:nz[-1] + 1]] if nz else []
-        return {"v": MODEL_VERSION, "ratios": [round(r, 3) for r in self.ratios], "counts": list(self.counts),
+        return {"v": MODEL_VERSION, "n": self.n, "ratios": [round(r, 3) for r in self.ratios], "counts": list(self.counts),
                 "h0": h0, "h": [int(x) if x == int(x) else x for x in h]}
 
     @classmethod
-    def from_dict(cls, d: Optional[dict], cfg: dict = None) -> "GearEstimator":
+    def from_dict(cls, d: Optional[dict], cfg: dict = None, n: int = DEFAULT_GEAR_COUNT) -> "GearEstimator":
+        """n: ayardaki vites sayısı. Eski (varsayılana bağlı, v1/v2) öğrenme ve vites sayısı ayardan farklı model
+        atılır (sıfırdan öğrenme). "n" alanı olmayan v3 kaydı 5 vitesli sayılır."""
         d = d or {}
-        if d.get("v", 1) != MODEL_VERSION:          # eski (varsayılana bağlı) öğrenme atılır
-            return cls(cfg=cfg)
-        g = cls(d.get("ratios"), d.get("counts"), cfg)
+        n = clamp_gear_count(n)
+        if d.get("v", 1) != MODEL_VERSION or d.get("n", 5) != n:
+            return cls(cfg=cfg, n=n)
+        g = cls(d.get("ratios"), d.get("counts"), cfg, n=n)
         h, h0 = d.get("h") or [], int(d.get("h0") or 0)
         for i, x in enumerate(h):
             if 0 <= h0 + i < g._nb:
@@ -260,7 +294,7 @@ class GearEstimator:
         return g
 
     def reset(self):
-        self.ratios, self.counts = list(DEFAULT_RATIOS), [0] * 5
+        self.ratios, self.counts = default_ratios(self.n), [0] * self.n
         self.hist = [0.0] * self._nb
         self.scale, self._pending = 1.0, 0
         self.win.clear()
@@ -268,14 +302,25 @@ class GearEstimator:
         self.state, self._cand, self._cand_n = None, None, 0
         self.dirty = True
 
+    def set_gear_count(self, n: int) -> bool:
+        """Vites sayısını değiştirir: farklıysa öğrenme tamamen sıfırlanır (eski numaralama anlamsız); değiştiyse True."""
+        k = clamp_gear_count(n)
+        if k == self.n:
+            return False
+        self.n = k
+        self._ld = [math.log(x) for x in default_ratios(k)]
+        self.reset()
+        self.tracker.last = None                 # eski numaralı vitesten yeni numaralıya "geçiş" sayılmasın
+        return True
+
     def learned(self, gear: int) -> bool:
         """Bu vitesin merkezi doğrudan veriden (yeterli gözlemli tepe) mi geliyor?"""
-        return self.counts[gear - 1] >= self.cfg["learned_count"]
+        return 1 <= gear <= len(self.counts) and self.counts[gear - 1] >= self.cfg["learned_count"]
 
     @property
     def confident(self) -> bool:
         """En az 3 vites veriden öğrenildi: numaralama (hangi tepe kaçıncı vites) güvenilir."""
-        return sum(1 for g in range(1, 6) if self.learned(g)) >= 3
+        return sum(1 for g in range(1, self.n + 1) if self.learned(g)) >= 3
 
     @property
     def shifts(self) -> list:
@@ -284,21 +329,21 @@ class GearEstimator:
     # --- sınıflama
     def _nearest(self, r: float):
         """(en yakın merkez indeksi, log sapma)"""
-        lr = math.log(r)
-        i = min(range(5), key=lambda k: abs(lr - math.log(self.ratios[k])))
-        return i, lr - math.log(self.ratios[i])
+        lr, rt = math.log(r), self.ratios
+        i = min(range(len(rt)), key=lambda k: abs(lr - math.log(rt[k])))
+        return i, lr - math.log(rt[i])
 
     def _tol(self, i: int, d: float) -> float:
         """i. merkezin d (log sapma) yönündeki toleransı: komşuya doğru yarı aralığın gap_frac kadarı."""
-        c = self.cfg
+        c, rt = self.cfg, self.ratios
         j = i + (1 if d > 0 else -1)
-        if j < 0 or j > 4:
+        if j < 0 or j > len(rt) - 1:
             return math.log(1 + c["tol"])
-        half = abs(math.log(self.ratios[j] / self.ratios[i])) / 2
+        half = abs(math.log(rt[j] / rt[i])) / 2
         return max(math.log(1 + c["tol_min"]), c["gap_frac"] * half)
 
     def classify(self, rpm, speed) -> Optional[int]:
-        """Tek hizalı örnek: 1..5, NEUTRAL ya da None (tutarsız/bilinmiyor)."""
+        """Tek hizalı örnek: 1..n, NEUTRAL ya da None (tutarsız/bilinmiyor)."""
         c = self.cfg
         if rpm is None or speed is None or rpm < c["min_rpm"]:
             return None
@@ -372,7 +417,7 @@ class GearEstimator:
         for p in cand:
             if all(abs(p[0] - q[0]) >= merge for q in kept):
                 kept.append(p)
-        kept = sorted(kept[:c["max_peaks"]])
+        kept = sorted(kept[:max(c["max_peaks"], self.n + 2)])     # 6-7 vites: yedek tepe payı
         out = []
         for k, (i, _) in enumerate(kept):              # merkez: komşu tepelerin ortasına kadar ağırlıklı ortalama
             lo = (kept[k - 1][0] + i) / 2 if k > 0 else -1e9
@@ -385,9 +430,9 @@ class GearEstimator:
         return out
 
     def _fit(self, peaks: list, assign: list):
-        """assign[j]: tepe j'nin vites indeksi (0..4) ya da None (atanmadı).
+        """assign[j]: tepe j'nin vites indeksi (0..n-1) ya da None (atanmadı).
         Dönüş (maliyet, oranlar, ölçek, vites kütleleri) ya da None (akla yatkın değil)."""
-        c = self.cfg
+        c, n, _LD = self.cfg, self.n, self._ld
         w = [math.sqrt(m) for _, m in peaks]
         used = [j for j in range(len(peaks)) if assign[j] is not None]
         sw = sum(w[j] for j in used)
@@ -401,14 +446,14 @@ class GearEstimator:
             else:
                 cost += w[j] * ((peaks[j][0] - _LD[assign[j]] - ls) / c["shape_sigma"]) ** 2
         # vites başına log düzeltme: veri varsa tepenin kendisi, yoksa komşu düzeltmelerinden (şekil korunur)
-        corr = [None] * 5
-        mass = [0.0] * 5
+        corr = [None] * n
+        mass = [0.0] * n
         for j in used:
             corr[assign[j]] = peaks[j][0] - _LD[assign[j]]
             mass[assign[j]] = peaks[j][1]
-        known = [g for g in range(5) if corr[g] is not None]
+        known = [g for g in range(n) if corr[g] is not None]
         full = list(corr)
-        for g in range(5):
+        for g in range(n):
             if full[g] is not None:
                 continue
             lo = [k for k in known if k < g]
@@ -418,40 +463,53 @@ class GearEstimator:
                 full[g] = corr[a] + (corr[b] - corr[a]) * (g - a) / (b - a)
             else:
                 full[g] = corr[lo[-1]] if lo else corr[hi[0]]
-        r = [math.exp(_LD[g] + full[g]) for g in range(5)]
-        for g in range(1, 5):
+        r = [math.exp(_LD[g] + full[g]) for g in range(n)]
+        for g in range(1, n):
             if not c["step_min"] <= r[g] / r[g - 1] <= c["step_max"]:
                 return None
         return cost, r, math.exp(ls), mass
 
     def reestimate(self) -> bool:
-        """Histogramdan 5 merkezi yeniden kestirir (tüm artan atamalar denenir); değiştiyse True."""
+        """Histogramdan n merkezi yeniden kestirir (tüm artan atamalar denenir); değiştiyse True.
+
+        Budama: art arda atanan iki tepe (vites g1 < g2) arasındaki log oran (g2-g1)*ln(step_min)..(g2-g1)*ln(step_max)
+        dışındaysa o dal _fit'in adım denetiminden zaten geçemez (aradaki adımların çarpımı tam o orandır); atlanır.
+        Sonuç budamasız aramayla aynıdır, 6-7 vitesde de deneme sayısı küçük kalır (fit_calls)."""
         self._pending = 0
         peaks = self._peaks()
         if not peaks:
             return False
+        c, n = self.cfg, self.n
+        lmin, lmax = math.log(c["step_min"]), math.log(c["step_max"])
         best = None
+        calls = 0
         assign = [None] * len(peaks)
 
-        def rec(j: int, next_g: int):
-            nonlocal best
+        def rec(j: int, next_g: int, last_j: int):
+            nonlocal best, calls
             if j == len(peaks):
+                calls += 1
                 if next_g > 0:
                     f = self._fit(peaks, assign)
                     if f and (best is None or f[0] < best[0]):
                         best = f
                 return
             assign[j] = None
-            rec(j + 1, next_g)
-            for g in range(next_g, 5):
+            rec(j + 1, next_g, last_j)
+            for g in range(next_g, n):
+                if last_j >= 0:
+                    d, st = g - assign[last_j], peaks[j][0] - peaks[last_j][0]
+                    if st < d * lmin - 1e-9 or st > d * lmax + 1e-9:
+                        continue
                 assign[j] = g
-                rec(j + 1, g + 1)
+                rec(j + 1, g + 1, j)
             assign[j] = None
-        rec(0, 0)
+        rec(0, 0, -1)
+        self.fit_calls = calls                    # son kestirimde değerlendirilen atama sayısı (test/izleme)
         if best is None:
             return False
         _, r, s, mass = best
-        changed = any(abs(a - b) / b > 1e-4 for a, b in zip(r, self.ratios))
+        changed = len(self.ratios) != n or any(abs(a - b) / b > 1e-4 for a, b in zip(r, self.ratios))
         self.ratios, self.scale = r, s
         self.counts = [int(round(m)) for m in mass]
         self.dirty = True

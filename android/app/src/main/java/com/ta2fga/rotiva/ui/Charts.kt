@@ -105,7 +105,7 @@ fun ProfileChart(
             }
             series({ it.rpm }, rMax, rpmC.copy(alpha = 0.85f), 3f)
             series({ it.speed }, yHi, lineC, 4f)
-            series({ it.gear?.toDouble() }, 6.0, gearC, 3f, step = true)
+            series({ it.gear?.toDouble() }, maxOf(6.0, (pts.maxOfOrNull { it.gear ?: 0 } ?: 0) + 1.0), gearC, 3f, step = true)   // 4..7 vites
             val t0 = r.samples.firstOrNull()?.t ?: 0.0
             r.result.events.forEach { e ->
                 val x = px((e.ts - t0) / 60.0)

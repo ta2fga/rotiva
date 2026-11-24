@@ -202,4 +202,135 @@ class GearTest {
         val (g, _) = check(scaled(1.25), NO_FIRST, setOf(2, 3, 4, 5))
         assertEquals(0, g.counts[0])
     }
+
+    // --- vites sayısı ayarı (4..7)
+
+    /** Genel profilli (DriveCycle.forGearbox) sürüş, n vitesli tahminciyle; son turda vites başına doğruluk. */
+    private fun driveN(truth: DoubleArray, loops: Int = 4, seed: Long = 5): Triple<GearEstimator, Array<Double?>, Int> {
+        val n = truth.size
+        val cyc = DriveCycle.forGearbox(truth)
+        val g = GearEstimator(nGears = n)
+        val rnd = java.util.Random(seed)
+        val ok = IntArray(n); val tot = IntArray(n)
+        var maxCalls = 0
+        var t = 0.0
+        while (t < cyc.length * loops) {
+            val p = cyc.at(t)
+            g.pushRpm(t, Math.round((p.rpm + rnd.nextGaussian() * 12) * 4) / 4.0)
+            val p2 = cyc.at(t + 0.15)
+            g.pushSpeed(t + 0.15, Math.round(p2.speed).toDouble())
+            maxCalls = maxOf(maxCalls, g.fitCalls)
+            val tg = p2.gear
+            if (t >= cyc.length * (loops - 1) && tg != null && p2.speed >= 8) {
+                tot[tg - 1]++
+                if (g.gear == tg) ok[tg - 1]++
+            }
+            t += 0.3 + (rnd.nextDouble() - 0.5) * 0.1
+        }
+        return Triple(g, Array(n) { if (tot[it] > 0) ok[it].toDouble() / tot[it] else null }, maxCalls)
+    }
+
+    private fun checkN(truth: DoubleArray): Triple<GearEstimator, Array<Double?>, Int> {
+        val res = driveN(truth)
+        val (g, acc, calls) = res
+        val n = truth.size
+        val msg = "n=$n oranlar=${g.ratios.joinToString()} gerçek=${truth.joinToString()} sayaç=${g.counts.joinToString()} " +
+            "doğruluk=${acc.joinToString()} atama=$calls"
+        assertEquals(msg, n, g.n)
+        assertEquals(msg, n, g.ratios.size)
+        assertEquals(msg, n, g.counts.size)
+        for (i in 0 until n) {
+            val gear = i + 1
+            assertEquals("vites $gear $msg", truth[i], g.ratios[i], truth[i] * 0.03)
+            assertEquals("vites $gear $msg", gear, g.classify(2000.0, truth[i] * 2))
+            assertTrue("vites $gear öğrenildi $msg", g.learned(gear))
+            assertTrue("vites $gear doğruluk $msg", acc[i]!! >= 0.75)
+        }
+        assertTrue(msg, g.confident)
+        assertTrue(msg, calls in 1..4000)                     // budanmış atama araması küçük kalır
+        return res
+    }
+
+    @Test fun defaultsPerGearCountArePlausible() {
+        assertArrayEquals(DEFAULT_RATIOS, defaultRatios(5), 0.0)   // 5 ileri değişmedi
+        for (n in GEAR_COUNTS) {
+            val r = defaultRatios(n)
+            assertEquals(n, r.size)
+            for (i in 1 until n) { val st = r[i] / r[i - 1]; assertTrue("n=$n adım $st", st in 1.15..2.1) }
+            val g = GearEstimator(nGears = n)
+            assertArrayEquals(r, g.ratios, 0.0)
+            for (i in 0 until n) assertEquals("n=$n", i + 1, g.classify(2000.0, r[i] * 2))
+            assertNull(g.classify(2000.0, 2 * kotlin.math.sqrt(r[0] * r[1])))   // 1-2 tam ortası: tutarsız
+        }
+        assertEquals(DEFAULT_GEAR_COUNT, GearEstimator(nGears = 3).n)          // desteklenmeyen -> 5
+        assertEquals(5, GearEstimator(nGears = 9).ratios.size)
+    }
+
+    @Test fun learnsFourSpeed() { checkN(doubleArrayOf(8.3, 15.2, 23.6, 33.5)) }
+
+    @Test fun learnsFiveSpeedGenericCycle() { checkN(DriveCycle.TRUE_RATIOS) }
+
+    @Test fun learnsSixSpeed() { checkN(doubleArrayOf(7.9, 13.8, 20.6, 27.4, 34.2, 41.5)) }
+
+    @Test fun learnsSixSpeedScaled() { checkN(DoubleArray(6) { defaultRatios(6)[it] * 1.2 }) }
+
+    @Test fun learnsSevenSpeed() {
+        val t0 = System.nanoTime()
+        checkN(doubleArrayOf(7.4, 12.0, 17.3, 23.0, 29.2, 35.4, 42.6))
+        assertTrue("süre", (System.nanoTime() - t0) / 1e9 < 5.0)
+    }
+
+    @Test fun changingGearCountResetsLearning() {
+        val (g, _, _) = driveN(DriveCycle.TRUE_RATIOS)
+        assertTrue(g.confident)
+        assertFalse(g.setGearCount(5))                       // aynı sayı: dokunulmaz
+        assertTrue(g.confident)
+        assertTrue(g.setGearCount(6))
+        assertEquals(6, g.n)
+        assertArrayEquals(defaultRatios(6), g.ratios, 0.0)
+        assertArrayEquals(IntArray(6), g.counts)
+        assertEquals(0.0, g.hist.sum(), 0.0)
+        assertNull(g.state)
+        assertFalse(g.confident)
+        assertTrue(g.dirty)
+        // sıfırdan 6 vitesli öğrenir (aynı nesne: kayıt sırasında değiştirme)
+        val truth = doubleArrayOf(7.9, 13.8, 20.6, 27.4, 34.2, 41.5)
+        val cyc = DriveCycle.forGearbox(truth)
+        var t = 1000.0
+        while (t < 1000.0 + cyc.length * 3) { val p = cyc.at(t); g.update(t, p.rpm, p.speed); t += 0.25 }
+        for (i in 0 until 6) assertEquals("vites ${i + 1} ${g.ratios.joinToString()}", truth[i], g.ratios[i], truth[i] * 0.04)
+        // kayıtlı 6 vitesli model: ayar 6 ise yüklenir, farklıysa atılır
+        val j = JSONObject(g.toJson().toString())
+        assertEquals(6, j.getInt("n"))
+        val same = GearEstimator.fromJson(j, 6)
+        assertArrayEquals(g.ratios, same.ratios, 1e-3)
+        assertArrayEquals(g.counts, same.counts)
+        val other = GearEstimator.fromJson(j, 5)
+        assertEquals(5, other.n)
+        assertArrayEquals(DEFAULT_RATIOS, other.ratios, 0.0)
+        assertEquals(0.0, other.hist.sum(), 0.0)
+        assertArrayEquals(defaultRatios(4), GearEstimator.fromJson(j, 4).ratios, 0.0)
+    }
+
+    @Test fun jsonRoundTripWithGearCountAndOldV3LoadsAsFive() {
+        for (n in GEAR_COUNTS) {
+            val (g, _, _) = driveN(DoubleArray(n) { defaultRatios(n)[it] * 1.1 }, loops = 2)
+            val g2 = GearEstimator.fromJson(JSONObject(g.toJson().toString()), n)
+            assertEquals(n, g2.n)
+            assertArrayEquals("n=$n", g.ratios, g2.ratios, 1e-3)
+            assertArrayEquals("n=$n", g.counts, g2.counts)
+            g2.reestimate()
+            for (i in 0 until n) assertEquals("n=$n", g.ratios[i], g2.ratios[i], g.ratios[i] * 0.005)
+        }
+        // "n" alanı olmayan eski v3 kaydı (gear learning v3) 5 vitesli olarak yüklenir
+        val old = JSONObject().put("v", 3).put("ratios", JSONArray(listOf(9.2, 17.5, 26.9, 36.2, 46.3)))
+            .put("counts", JSONArray(listOf(50, 60, 70, 80, 90))).put("h0", 0).put("h", JSONArray())
+        val g5 = GearEstimator.fromJson(old)
+        assertEquals(5, g5.n)
+        assertArrayEquals(doubleArrayOf(9.2, 17.5, 26.9, 36.2, 46.3), g5.ratios, 1e-9)
+        assertArrayEquals(intArrayOf(50, 60, 70, 80, 90), g5.counts)
+        assertArrayEquals(defaultRatios(6), GearEstimator.fromJson(old, 6).ratios, 0.0)   // ayar 6: sıfırdan
+        // vites sayısıyla uyuşmayan oran dizisi geçersiz sayılır
+        assertArrayEquals(defaultRatios(6), GearEstimator(doubleArrayOf(9.2, 17.5, 26.9, 36.2, 46.3), nGears = 6).ratios, 0.0)
+    }
 }
