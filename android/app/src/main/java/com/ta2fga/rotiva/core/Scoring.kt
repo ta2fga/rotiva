@@ -30,6 +30,9 @@ data class ScoreCfg(
     // viraj: sürekli olmalı (2 Hz'de en az 2 ardışık örnek, ≈1 sn kapsama), dikey darbeyle çakışmamalı,
     // GPS yönü varsa olay çevresinde (±cornerHeadingWinS) en az cornerHeadingDeg derece dönüş olmalı
     val cornerMinS: Double = 0.8, val cornerMinSamples: Int = 2, val cornerVertMaskG: Double = 0.4,
+    // maske yalnızca yalıtılmış darbeye: çevredeki (±cornerVertLocalS) dikey medyanın en az bu katı olmalı
+    // (sürekli bozuk/parke yolda her örnek "darbe" sayılıp gerçek virajlar maskelenmesin)
+    val cornerVertLocalS: Double = 5.0, val cornerVertLocalK: Double = 1.5,
     val cornerHeadingDeg: Double = 8.0, val cornerHeadingWinS: Double = 1.5,
     // çukur / bozuk yol: kısa dikey darbe (yol durumu; sürücü puanını varsayılan olarak etkilemez)
     val potholeG: Double = 0.6, val potholeMinKmh: Double = 10.0, val potholeMergeS: Double = 1.5,
@@ -150,6 +153,19 @@ fun sustained(S: List<Sample>, flags: BooleanArray, minS: Double, minSamples: In
         while (k + 1 < flags.size && flags[k + 1]) k++
         if (k - i + 1 >= minSamples && S[k].t - S[i].t + step >= minS - 1e-9) for (x in i..k) out[x] = true
         i = k + 1
+    }
+    return out
+}
+
+/** Her örnek için ±[winS] sn içindeki [f] değerlerinin medyanı (değer yoksa 0). */
+fun localMedian(S: List<Sample>, f: (Sample) -> Double?, winS: Double): DoubleArray {
+    val out = DoubleArray(S.size)
+    var lo = 0; var hi = 0
+    for (i in S.indices) {
+        while (S[i].t - S[lo].t > winS) lo++
+        while (hi + 1 < S.size && S[hi + 1].t - S[i].t <= winS) hi++
+        val w = (lo..hi).mapNotNull { f(S[it]) }.sorted()
+        out[i] = if (w.isEmpty()) 0.0 else if (w.size % 2 == 1) w[w.size / 2] else (w[w.size / 2 - 1] + w[w.size / 2]) / 2
     }
     return out
 }
@@ -322,9 +338,10 @@ fun analyze(input: List<Sample>, cfg: ScoreCfg = DEFAULT_CFG, t0In: Double? = nu
     // --- viraj (yanal ivme): sürekli, dikey darbesiz ve (GPS yönü varsa) gerçekten dönülen yerlerde
     if (hasLat) {
         // dikey darbenin baskın olduğu örnek: yanal değer büyük olasılıkla darbe sızıntısıdır
+        val vLocal = localMedian(S, { it.gVert }, cfg.cornerVertLocalS)
         val jolt = BooleanArray(n) { i ->
             val v = S[i].gVert ?: 0.0
-            v >= cfg.cornerVertMaskG && v >= abs(S[i].gLat ?: 0.0)
+            v >= cfg.cornerVertMaskG && v >= abs(S[i].gLat ?: 0.0) && v >= cfg.cornerVertLocalK * vLocal[i]
         }
         val raw = BooleanArray(n) { i ->
             S[i].gLat != null && abs(S[i].gLat!!) > cfg.cornerG && (S[i].speed ?: 0.0) > 10 && !jolt[i]

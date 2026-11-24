@@ -173,6 +173,22 @@ class ScoringTest {
         assertEquals(1, r.events.count { it.type == "harsh_corner" })
     }
 
+    @Test fun cornerOnVeryRoughRoadNotMaskedByVerticalPeaks() {
+        // parke/bozuk yol: her aralıkta dikey TEPE yanal medyandan büyük (0,6..1,0 g); yalıtılmış darbe değil,
+        // gerçek (dönüşlü) viraj maskelenmemeli. Aynı yolda tek bir çukur ise hâlâ viraj sayılmamalı.
+        val r = analyze(build(120, 0.0, { 40.0 }) { s, t ->
+            s.bearing = if (t < 50) 0.0 else if (t <= 54) (t - 50) * 20.0 else 80.0
+            s.gLat = if (t in 50.0..54.0) 0.45 else 0.04
+            s.gVert = if ((t * 2).toInt() % 2 == 0) 0.6 else 0.95
+        })
+        assertEquals(1, r.events.count { it.type == "harsh_corner" })
+        val p = analyze(build(120, 0.0, { 40.0 }) { s, t ->
+            s.gVert = if (t == 50.0 || t == 50.5) 1.4 else 0.15
+            s.gLat = if (t == 50.0 || t == 50.5) 0.5 else 0.04
+        })
+        assertFalse(p.events.any { it.type == "harsh_corner" })
+    }
+
     @Test fun separatePotholesAndSlowSpeedIgnored() {
         val r = analyze(build(120, 0.0, { t -> if (t < 80) 40.0 else 6.0 }) { s, t ->
             s.gVert = if (t == 30.0 || t == 40.0 || t == 100.0) 0.9 else 0.1
