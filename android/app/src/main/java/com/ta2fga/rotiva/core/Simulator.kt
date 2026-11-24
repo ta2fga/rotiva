@@ -7,8 +7,13 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
 
-/** Demo sürüş döngüsü (desktop app/simulator.py DriveCycle): şehir + otoyol, vites geçişleri, birkaç sert olay. */
-class DriveCycle {
+/**
+ * Demo sürüş döngüsü (desktop app/simulator.py DriveCycle): şehir + otoyol, vites geçişleri, birkaç sert olay.
+ * [ratios]: aracın gerçek vites oranları, [segs]: sürüş profili (testlerde farklı araç/sürüş için).
+ */
+class DriveCycle(val ratios: DoubleArray = TRUE_RATIOS, val segs: List<Seg> = SEGS) {
+    val length: Double = segs.last().end
+
     class Seg(val end: Double, val speed: Double, val gear: Int, val load: Double? = null, val wob: Double = 0.0)
     data class Point(val speed: Double, val rpm: Double, val gear: Int?, val load: Double, val coolant: Double)
 
@@ -30,14 +35,14 @@ class DriveCycle {
     }
 
     fun at(t: Double): Point {
-        val tc = t % LENGTH
+        val tc = t % length
         var prevT = 0.0; var prevV = 0.0; var prevG = 0
         var seg: Seg? = null
-        for (sg in SEGS) {
+        for (sg in segs) {
             if (tc <= sg.end) { seg = sg; break }
             prevT = sg.end; prevV = sg.speed; prevG = sg.gear
         }
-        val sg = seg ?: SEGS.last()
+        val sg = seg ?: segs.last()
         val f = (tc - prevT) / max(sg.end - prevT, 1e-6)
         var v = prevV + (sg.speed - prevV) * f
         val acc = (sg.speed - prevV) / max(sg.end - prevT, 1e-6) / 3.6
@@ -48,10 +53,10 @@ class DriveCycle {
         var gear: Int? = g
         var rpm: Double
         if (g >= 1) {
-            rpm = max(IDLE, v / TRUE_RATIOS[g - 1] * 1000)
+            rpm = max(IDLE, v / ratios[g - 1] * 1000)
             if (shifting) {
                 gear = null
-                val old = max(IDLE, v / TRUE_RATIOS[prevG - 1] * 1000)
+                val old = max(IDLE, v / ratios[prevG - 1] * 1000)
                 rpm = max(IDLE, old * (1 - 0.35 * (tc - prevT) / SHIFT_S))
             }
         } else { rpm = IDLE; gear = null }

@@ -1,25 +1,41 @@
 """Vites tahmini (Android core/Gear.kt ile aynı algoritma).
 
 Oran r = hız (km/s) / (devir/1000). Devir ve hız ECU'dan ayrı isteklerle okunduğu için örnekler zamanca
-hizalanır (PairAligner: hız anına devir enterpolasyonu). Hizalı çiftler en yakın vites merkezine eşlenir;
-merkezler kararlı sürüşte çevrimiçi kümeleme ile araca göre düzeltilir (varsayılanın ±%bound içinde).
+hizalanır (PairAligner: hız anına devir enterpolasyonu). Hizalı çiftler en yakın vites merkezine eşlenir.
+
+Öğrenme (model v3): kararlı sürüş pencerelerinden gelen oran gözlemleri log ölçekli bir histogramda birikir
+(~%1,5 genişlikte kutular, 4..70 km/s/1000 d/dk; toplam ağırlık sınırlı, eskiler orantılı söner). Her
+`reestimate_n` yeni gözlemde merkezler yeniden kestirilir: düzleştirilmiş histogramın tepeleri bulunur, tepeler
+"akla yatkın şanzıman" modeline göre vites numaralarına atanır (oranlar artan, ardışık adım 1,15..2,1;
+varsayılan oranların ŞEKLİ tek bir ölçek s ∈ 0,6..1,6 ile ölçeklenir, verisi olan viteste gerçek tepe kullanılır,
+verisi olmayan vites komşularının düzeltmesiyle şekilden doldurulur). Tüm atamalar denenir, en düşük maliyetli
+seçilir. Böylece gerçek oranlar varsayılandan çok farklı olsa da (ör. ×1,25) vitesler doğru numaralanır.
+
+Sınıflama toleransı komşu merkezler arasındaki (log) yarı aralığa göredir: merkezden yarı aralığın
+`gap_frac` kadarına kadar kabul edilir, tam ortadaki dar bant (debriyaj kaydırma/geçiş) tutarsızdır.
 Sonuç histerezisle yayınlanır: yeni vites ~0,5 sn ve en az 2 örnek sürmeli; tutarsız (debriyaj/geçiş)
 örneklerde son vites kısa süre korunur. "Boşta" (NEUTRAL) yalnızca duruyorken ya da hareket hâlinde rölantide
 oran uyuşmuyorsa verilir; veri yoksa/eskiyse sonuç bilinmiyor (None)."""
 from __future__ import annotations
 
+import math
 from collections import deque
 from dataclasses import dataclass
 from typing import Optional
 
-# 2017 C-Elysée 1.6 HDi 92 hp, BE4 5 ileri: km/s per 1000 d/dk (yaklaşık; kullanıldıkça öğrenilir)
+# 2017 C-Elysée 1.6 HDi 92 hp, BE4 5 ileri: km/s per 1000 d/dk (yalnızca başlangıç ve ŞEKİL; gerçek oranlar
+# veriden öğrenilir, araç bunlardan %60'a kadar farklı olabilir)
 DEFAULT_RATIOS = [7.5, 14.0, 21.5, 29.0, 37.0]
-MODEL_VERSION = 2
+MODEL_VERSION = 3
 NEUTRAL = 0
+_LD = [math.log(x) for x in DEFAULT_RATIOS]                     # varsayılan şekil (log)
+_KER = [math.exp(-0.5 * (k / 1.3) ** 2) for k in range(-4, 5)]   # histogram düzleştirme çekirdeği
 
 CFG = dict(
     # eşleme
-    tol=0.10,             # merkeze göre oransal tolerans
+    tol=0.10,             # uç vitesler (1. altı, 5. üstü) için oransal tolerans
+    gap_frac=0.75,        # komşu merkeze doğru: log yarı aralığın bu kadarı kabul (ortadaki dar bant tutarsız)
+    tol_min=0.05,         # komşu tarafında en az bu kadar tolerans
     tol_speed_q=0.5,      # + bu/hız (OBD hızı tam sayı km/s)
     min_rpm=450,          # altı: motor çalışmıyor -> bilinmiyor
     idle_rpm_max=1050,    # rölanti bandı
@@ -32,8 +48,18 @@ CFG = dict(
     # öğrenme
     window_s=1.5, min_learn_rpm=1100, min_learn_speed=8.0,
     max_dspeed=8.0, max_drpm=1000, max_spread=0.03,  # hizalı örneklerde ivmelenme de öğretir; ölçüt oran dağılımı
-    assign_radius=0.10, bound=0.18,
-    count_cap=300, prior=5, min_sep=0.12, learned_count=40,
+    learned_count=40,     # bu kadar gözlemli tepe: vites "öğrenildi"
+    # histogram + yeniden kestirim
+    hist_min=4.0, hist_max=70.0, hist_bin=0.015,   # log kutular (~%1,5)
+    hist_cap=6000.0,      # toplam ağırlık üst sınırı (aşılınca orantılı sönüm -> uyum)
+    reestimate_n=25,      # bu kadar yeni gözlemde bir merkezler yeniden kestirilir
+    peak_min=8.0, peak_frac=0.012,   # tepe kütlesi en az max(peak_min, peak_frac*toplam)
+    peak_merge=0.10,      # log uzaklığı bundan küçük tepeler birleştirilir
+    max_peaks=7,
+    shape_sigma=0.09,     # tepe ile ölçeklenmiş varsayılan şekil arası log sapma ölçeği
+    drop_cost=4.0,        # atanmayan tepe cezası (sigma^2 biriminde)
+    scale_min=0.6, scale_max=1.6, scale_sigma=0.3, scale_prior_w=1.0,
+    step_min=1.15, step_max=2.1,     # ardışık vites oranı adımı (r[i+1]/r[i]) akla yatkın aralığı
     gap_reset_s=8.0,      # vites arası en fazla boşluk (kavrama/boşta)
 )
 
@@ -154,11 +180,20 @@ class PairAligner:
 
 
 class GearEstimator:
-    def __init__(self, ratios=None, counts=None, cfg: dict = None):
+    def __init__(self, ratios=None, counts=None, cfg: dict = None, hist=None):
         self.cfg = dict(CFG, **(cfg or {}))
         ok = self._valid(ratios)
         self.ratios = [float(r) for r in ratios] if ok else list(DEFAULT_RATIOS)
-        self.counts = list(counts) if ok and counts and len(counts) == 5 else [0] * 5
+        self.counts = [int(x) for x in counts] if ok and counts and len(counts) == 5 else [0] * 5
+        c = self.cfg
+        self._lmin = math.log(c["hist_min"])
+        self._bw = math.log(1 + c["hist_bin"])
+        self._nb = int(math.ceil((math.log(c["hist_max"]) - self._lmin) / self._bw))
+        self.hist = [0.0] * self._nb          # log oran histogramı (kararlı gözlem ağırlıkları)
+        if hist and len(hist) == self._nb:
+            self.hist = [max(0.0, float(x)) for x in hist]
+        self.scale = 1.0                      # son kestirimde varsayılan şekle göre ölçek
+        self._pending = 0                     # son kestirimden beri yeni gözlem
         self.win: deque = deque(maxlen=64)
         self.aligner = PairAligner(self.cfg["max_skew"], self.cfg["max_bracket"])
         self.state: Optional[int] = None       # 1..5, NEUTRAL, None (bilinmiyor)
@@ -171,12 +206,15 @@ class GearEstimator:
         self.dirty = False
 
     def _valid(self, r) -> bool:
+        """Akla yatkın şanzıman: aralık içinde, artan, ardışık adımlar makul (varsayılana bağlı DEĞİL)."""
+        c = self.cfg
         if not r or len(r) != 5:
             return False
         for i in range(5):
-            if abs(r[i] - DEFAULT_RATIOS[i]) / DEFAULT_RATIOS[i] > self.cfg["bound"] + 1e-9:
+            x = r[i]
+            if x is None or x != x or not c["hist_min"] <= x <= c["hist_max"]:
                 return False
-            if i and r[i] <= r[i - 1]:
+            if i and not (1.05 <= x / r[i - 1] <= 2.6):
                 return False
         return True
 
@@ -202,24 +240,42 @@ class GearEstimator:
 
     # --- kalıcılık
     def to_dict(self) -> dict:
-        return {"v": MODEL_VERSION, "ratios": [round(r, 3) for r in self.ratios], "counts": list(self.counts)}
+        """Kompakt: histogram yalnızca dolu aralık (h0 = ilk kutu), 0,1 hassasiyetle."""
+        nz = [i for i, x in enumerate(self.hist) if x >= 0.05]
+        h0 = nz[0] if nz else 0
+        h = [round(x, 1) for x in self.hist[h0:nz[-1] + 1]] if nz else []
+        return {"v": MODEL_VERSION, "ratios": [round(r, 3) for r in self.ratios], "counts": list(self.counts),
+                "h0": h0, "h": [int(x) if x == int(x) else x for x in h]}
 
     @classmethod
     def from_dict(cls, d: Optional[dict], cfg: dict = None) -> "GearEstimator":
         d = d or {}
-        if d.get("v", 1) != MODEL_VERSION:          # eski (hizasız) öğrenme atılır
+        if d.get("v", 1) != MODEL_VERSION:          # eski (varsayılana bağlı) öğrenme atılır
             return cls(cfg=cfg)
-        return cls(d.get("ratios"), d.get("counts"), cfg)
+        g = cls(d.get("ratios"), d.get("counts"), cfg)
+        h, h0 = d.get("h") or [], int(d.get("h0") or 0)
+        for i, x in enumerate(h):
+            if 0 <= h0 + i < g._nb:
+                g.hist[h0 + i] = max(0.0, float(x))
+        return g
 
     def reset(self):
         self.ratios, self.counts = list(DEFAULT_RATIOS), [0] * 5
+        self.hist = [0.0] * self._nb
+        self.scale, self._pending = 1.0, 0
         self.win.clear()
         self.aligner.clear()
         self.state, self._cand, self._cand_n = None, None, 0
         self.dirty = True
 
     def learned(self, gear: int) -> bool:
+        """Bu vitesin merkezi doğrudan veriden (yeterli gözlemli tepe) mi geliyor?"""
         return self.counts[gear - 1] >= self.cfg["learned_count"]
+
+    @property
+    def confident(self) -> bool:
+        """En az 3 vites veriden öğrenildi: numaralama (hangi tepe kaçıncı vites) güvenilir."""
+        return sum(1 for g in range(1, 6) if self.learned(g)) >= 3
 
     @property
     def shifts(self) -> list:
@@ -227,8 +283,19 @@ class GearEstimator:
 
     # --- sınıflama
     def _nearest(self, r: float):
-        i = min(range(5), key=lambda k: abs(r - self.ratios[k]) / self.ratios[k])
-        return i, abs(r - self.ratios[i]) / self.ratios[i]
+        """(en yakın merkez indeksi, log sapma)"""
+        lr = math.log(r)
+        i = min(range(5), key=lambda k: abs(lr - math.log(self.ratios[k])))
+        return i, lr - math.log(self.ratios[i])
+
+    def _tol(self, i: int, d: float) -> float:
+        """i. merkezin d (log sapma) yönündeki toleransı: komşuya doğru yarı aralığın gap_frac kadarı."""
+        c = self.cfg
+        j = i + (1 if d > 0 else -1)
+        if j < 0 or j > 4:
+            return math.log(1 + c["tol"])
+        half = abs(math.log(self.ratios[j] / self.ratios[i])) / 2
+        return max(math.log(1 + c["tol_min"]), c["gap_frac"] * half)
 
     def classify(self, rpm, speed) -> Optional[int]:
         """Tek hizalı örnek: 1..5, NEUTRAL ya da None (tutarsız/bilinmiyor)."""
@@ -237,8 +304,8 @@ class GearEstimator:
             return None
         if speed < c["stop_speed"]:
             return NEUTRAL
-        i, err = self._nearest(speed / (rpm / 1000.0))
-        if err <= c["tol"] + c["tol_speed_q"] / speed:
+        i, d = self._nearest(speed / (rpm / 1000.0))
+        if abs(d) <= self._tol(i, d) + c["tol_speed_q"] / speed:
             return i + 1
         if rpm <= c["idle_rpm_max"] and speed >= c["coast_speed"]:
             return NEUTRAL
@@ -265,18 +332,130 @@ class GearEstimator:
         self._update_cluster(ms / (mr / 1000.0))
 
     def _update_cluster(self, r: float):
+        """Kararlı gözlemi log histograma ekler; her reestimate_n gözlemde merkezleri yeniden kestirir."""
         c = self.cfg
-        i, err = self._nearest(r)
-        if err > c["assign_radius"]:
+        x = (math.log(r) - self._lmin) / self._bw - 0.5
+        if x < -0.5 or x > self._nb - 0.5:
             return
-        self.counts[i] += 1
-        n = min(self.counts[i] + c["prior"], c["count_cap"])
-        new = self.ratios[i] + (r - self.ratios[i]) / n
-        lo = max(self.ratios[i - 1] * (1 + c["min_sep"]) if i > 0 else 0, DEFAULT_RATIOS[i] * (1 - c["bound"]))
-        hi = min(self.ratios[i + 1] / (1 + c["min_sep"]) if i < 4 else 1e9, DEFAULT_RATIOS[i] * (1 + c["bound"]))
-        if lo < new < hi:
-            self.ratios[i] = new
-            self.dirty = True
+        i0 = int(math.floor(x))
+        f = x - i0
+        if 0 <= i0 < self._nb:
+            self.hist[i0] += 1 - f
+        if i0 + 1 < self._nb:
+            self.hist[i0 + 1] += f
+        tot = sum(self.hist)
+        if tot > c["hist_cap"]:                          # orantılı sönüm: eski veri yavaşça unutulur
+            k = c["hist_cap"] / tot
+            self.hist = [h * k for h in self.hist]
+        self._pending += 1
+        self.dirty = True
+        if self._pending >= c["reestimate_n"]:
+            self.reestimate()
+
+    # --- kestirim: tepe bulma + akla yatkın şanzıman ataması
+    def _peaks(self) -> list:
+        """Düzleştirilmiş histogram tepeleri: [(log merkez, kütle)] artan sırada."""
+        c, h, n = self.cfg, self.hist, self._nb
+        sm = [sum(_KER[k + 4] * h[i + k] for k in range(-4, 5) if 0 <= i + k < n) for i in range(n)]
+        thr = max(c["peak_min"], c["peak_frac"] * sum(h))
+        cand = []
+        for i in range(n):
+            left = sm[i - 1] if i > 0 else 0.0
+            right = sm[i + 1] if i < n - 1 else 0.0
+            if sm[i] > left and sm[i] >= right:
+                m = sum(h[max(0, i - 3):min(n, i + 4)])
+                if m >= thr:
+                    cand.append((i, m))
+        merge = c["peak_merge"] / self._bw              # çok yakın tepeler birleşir (büyük olan kalır)
+        cand.sort(key=lambda p: (-p[1], p[0]))
+        kept = []
+        for p in cand:
+            if all(abs(p[0] - q[0]) >= merge for q in kept):
+                kept.append(p)
+        kept = sorted(kept[:c["max_peaks"]])
+        out = []
+        for k, (i, _) in enumerate(kept):              # merkez: komşu tepelerin ortasına kadar ağırlıklı ortalama
+            lo = (kept[k - 1][0] + i) / 2 if k > 0 else -1e9
+            hi = (kept[k + 1][0] + i) / 2 if k < len(kept) - 1 else 1e9
+            js = [j for j in range(max(0, i - 4), min(n, i + 5)) if lo < j < hi]
+            w = sum(h[j] for j in js)
+            if w > 0:
+                cj = sum(h[j] * j for j in js) / w
+                out.append((self._lmin + (cj + 0.5) * self._bw, w))
+        return out
+
+    def _fit(self, peaks: list, assign: list):
+        """assign[j]: tepe j'nin vites indeksi (0..4) ya da None (atanmadı).
+        Dönüş (maliyet, oranlar, ölçek, vites kütleleri) ya da None (akla yatkın değil)."""
+        c = self.cfg
+        w = [math.sqrt(m) for _, m in peaks]
+        used = [j for j in range(len(peaks)) if assign[j] is not None]
+        sw = sum(w[j] for j in used)
+        ls = sum(w[j] * (peaks[j][0] - _LD[assign[j]]) for j in used) / (sw + c["scale_prior_w"])
+        if not math.log(c["scale_min"]) <= ls <= math.log(c["scale_max"]):
+            return None
+        cost = c["scale_prior_w"] * (ls / c["scale_sigma"]) ** 2
+        for j in range(len(peaks)):
+            if assign[j] is None:
+                cost += c["drop_cost"] * w[j]
+            else:
+                cost += w[j] * ((peaks[j][0] - _LD[assign[j]] - ls) / c["shape_sigma"]) ** 2
+        # vites başına log düzeltme: veri varsa tepenin kendisi, yoksa komşu düzeltmelerinden (şekil korunur)
+        corr = [None] * 5
+        mass = [0.0] * 5
+        for j in used:
+            corr[assign[j]] = peaks[j][0] - _LD[assign[j]]
+            mass[assign[j]] = peaks[j][1]
+        known = [g for g in range(5) if corr[g] is not None]
+        full = list(corr)
+        for g in range(5):
+            if full[g] is not None:
+                continue
+            lo = [k for k in known if k < g]
+            hi = [k for k in known if k > g]
+            if lo and hi:
+                a, b = lo[-1], hi[0]
+                full[g] = corr[a] + (corr[b] - corr[a]) * (g - a) / (b - a)
+            else:
+                full[g] = corr[lo[-1]] if lo else corr[hi[0]]
+        r = [math.exp(_LD[g] + full[g]) for g in range(5)]
+        for g in range(1, 5):
+            if not c["step_min"] <= r[g] / r[g - 1] <= c["step_max"]:
+                return None
+        return cost, r, math.exp(ls), mass
+
+    def reestimate(self) -> bool:
+        """Histogramdan 5 merkezi yeniden kestirir (tüm artan atamalar denenir); değiştiyse True."""
+        self._pending = 0
+        peaks = self._peaks()
+        if not peaks:
+            return False
+        best = None
+        assign = [None] * len(peaks)
+
+        def rec(j: int, next_g: int):
+            nonlocal best
+            if j == len(peaks):
+                if next_g > 0:
+                    f = self._fit(peaks, assign)
+                    if f and (best is None or f[0] < best[0]):
+                        best = f
+                return
+            assign[j] = None
+            rec(j + 1, next_g)
+            for g in range(next_g, 5):
+                assign[j] = g
+                rec(j + 1, g + 1)
+            assign[j] = None
+        rec(0, 0)
+        if best is None:
+            return False
+        _, r, s, mass = best
+        changed = any(abs(a - b) / b > 1e-4 for a, b in zip(r, self.ratios))
+        self.ratios, self.scale = r, s
+        self.counts = [int(round(m)) for m in mass]
+        self.dirty = True
+        return changed
 
     def fit(self, pairs) -> list:
         """Toplu öğrenme: pairs=[(t, rpm, speed)] sırayla beslenir; ratios döner."""

@@ -47,6 +47,13 @@ class DriveCycle:
     ]
     LENGTH = 131.0
 
+    def __init__(self, ratios=None, segs=None):
+        """ratios: gerçek vites oranları (test için farklı araçlar), segs: farklı sürüş profili."""
+        self.ratios = list(ratios) if ratios else list(self.TRUE_RATIOS)
+        if segs:
+            self.SEGS = list(segs)
+            self.LENGTH = float(segs[-1][0])
+
     def at(self, t: float) -> dict:
         tc = t % self.LENGTH
         prev_t, prev_v, prev_g = 0.0, 0.0, 0
@@ -69,10 +76,10 @@ class DriveCycle:
         shifting = g != prev_g and prev_g >= 1 and g >= 1 and (tc - prev_t) < self.SHIFT_S
         gear = g
         if g >= 1:
-            rpm = max(self.IDLE, v / self.TRUE_RATIOS[g - 1] * 1000)
+            rpm = max(self.IDLE, v / self.ratios[g - 1] * 1000)
             if shifting:
                 gear = None
-                old = max(self.IDLE, v / self.TRUE_RATIOS[prev_g - 1] * 1000)
+                old = max(self.IDLE, v / self.ratios[prev_g - 1] * 1000)
                 rpm = max(self.IDLE, old * (1 - 0.35 * (tc - prev_t) / self.SHIFT_S))
         else:
             rpm = self.IDLE
