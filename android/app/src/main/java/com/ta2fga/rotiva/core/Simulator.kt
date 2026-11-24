@@ -198,6 +198,7 @@ class DemoWorld {
     private var lastSpeed = 0.0
     var lat = LAT0; var lon = LON0; var alt = 100.0; var bearing = 0.0
     var gLong = 0.0; var gLat = 0.0
+    var gVert = 0.0      // dikey darbe tepe değeri, g (yol titreşimi + ara sıra çukur)
 
     companion object {
         const val LAT0 = 41.0200
@@ -225,6 +226,8 @@ class DemoWorld {
             pts.mapIndexed { i, p -> if (i > 0) d += Math.hypot(p.first - pts[i - 1].first, p.second - pts[i - 1].second); Triple(p.first, p.second, d) }
         }
         val LOOP_M: Double get() = PATH.last().third
+        /** Çevrim üzerindeki çukurların konumu (m) ve darbe büyüklüğü (g, 40 km/s'de). */
+        val POTHOLES = listOf(850.0 to 0.85, 2650.0 to 1.1, 4300.0 to 0.75)
 
         fun pointAt(dm: Double): Triple<Double, Double, Double> {   // x, y, yön (derece)
             val d = ((dm % LOOP_M) + LOOP_M) % LOOP_M
@@ -245,11 +248,20 @@ class DemoWorld {
     fun step(t: Double, speedKmh: Double) {
         val lt = lastT
         val v = speedKmh / 3.6
+        val d0 = dist
         if (lt != null) {
             val dt = t - lt
             dist += v * dt
             gLong = ((speedKmh - lastSpeed) / 3.6 / max(dt, 1e-3)) / VehicleFrame.G
         }
+        // dikey: hızla artan hafif yol titreşimi; bu adımda bir çukurun üzerinden geçildiyse büyük darbe
+        gVert = (0.04 + 0.002 * speedKmh) * (0.7 + 0.3 * abs(sin(t * 7.3)))
+        var hit = 0.0
+        if (dist > d0 && v > 2.0) {
+            val a = ((d0 % LOOP_M) + LOOP_M) % LOOP_M; val b = a + (dist - d0)
+            for ((p, g) in POTHOLES) if ((p in a..b) || (p + LOOP_M in a..b)) hit = max(hit, g * min(1.4, 0.5 + speedKmh / 80))
+        }
+        gVert = max(gVert, hit)
         lastT = t; lastSpeed = speedKmh
         val (x, y, brg) = pointAt(dist)
         lat = LAT0 + y / 111320.0
@@ -261,5 +273,7 @@ class DemoWorld {
         val b1 = pointAt(dist - 6.0).third
         val dpsi = Math.toRadians(((b2 - b1 + 540) % 360) - 180) / 12.0     // rad/m
         gLat = v * v * dpsi / VehicleFrame.G
+        // çukurda yanal eksene küçük sızıntı (medyan süzgeci sonrası gerçekçi düzey)
+        if (hit > 0) gLat += 0.08 * sin(t * 13.0)
     }
 }

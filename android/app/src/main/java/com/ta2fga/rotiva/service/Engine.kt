@@ -101,6 +101,7 @@ object Engine {
         Item("grade", "Yol Eğimi", "%", "Telefon", -15.0, 15.0, decimals = 1),
         Item("g_long", "Boylamasına İvme", "g", "Telefon", -1.0, 1.0, decimals = 2),
         Item("g_lat", "Yanal İvme", "g", "Telefon", -1.0, 1.0, warnHi = 0.35, critHi = 0.6, decimals = 2),
+        Item("g_vert", "Dikey Darbe", "g", "Telefon", 0.0, 2.0, warnHi = 0.4, critHi = DEFAULT_CFG.potholeG, decimals = 2),
         Item("asc", "Toplam Çıkış", "m", "Telefon", 0.0, 3000.0, decimals = 0),
         Item("desc", "Toplam İniş", "m", "Telefon", 0.0, 3000.0, decimals = 0),
     )
@@ -386,7 +387,7 @@ object Engine {
             s.maf = fresh("maf", now); s.frp = fresh("frp", now)
             demo.step(demoT, s.speed ?: 0.0)
             s.lat = demo.lat; s.lon = demo.lon; s.gpsSpeed = s.speed; s.bearing = demo.bearing; s.alt = demo.alt
-            s.acc = 4.0; s.gLong = demo.gLong; s.gLat = demo.gLat
+            s.acc = 4.0; s.gLong = demo.gLong; s.gLat = demo.gLat; s.gVert = demo.gVert
             gpsOk = true; obdOk = true; hasAccel = true
         } else {
             val fix = lastFix
@@ -405,8 +406,9 @@ object Engine {
                 synchronized(h.lock) {
                     fuser.alt?.let { s.alt = it }
                     s.baroAlt = fuser.baroAlt
-                    val (l, la) = frame.takeTick()
-                    s.gLong = l; s.gLat = la
+                    // yanal: aralık medyanı (çukur darbesi sızıntısına dayanıklı); dikey: aralıktaki en büyük darbe
+                    val tk = frame.takeTick()
+                    s.gLong = tk.long; s.gLat = tk.lat; s.gVert = tk.vert
                 }
             }
             if (s.gLat == null && gpsOk && fix != null) {
@@ -455,7 +457,7 @@ object Engine {
         // paylaşılan değerler
         val phone = HashMap<String, Double?>()
         phone["gps_speed"] = s.gpsSpeed; phone["alt"] = s.alt; phone["grade"] = grade
-        phone["g_long"] = s.gLong; phone["g_lat"] = s.gLat
+        phone["g_long"] = s.gLong; phone["g_lat"] = s.gLat; phone["g_vert"] = s.gVert
         phone["asc"] = if (recorder.active) elevTracker.ascent else null
         phone["desc"] = if (recorder.active) elevTracker.descent else null
         publishValues()

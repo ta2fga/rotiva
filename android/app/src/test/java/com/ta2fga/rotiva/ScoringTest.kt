@@ -104,6 +104,93 @@ class ScoringTest {
         assertFalse(mild.events.any { it.type == "harsh_corner" })
     }
 
+    @Test fun potholeSpikeIsPotholeNotCorner() {
+        // tek örneklik büyük yanal sıçrama + büyük dikey darbe (çukur), düz yol (yön sabit)
+        val r = analyze(build(120, 0.0, { 40.0 }) { s, t ->
+            s.bearing = 90.0
+            s.gVert = if (t == 50.0) 1.1 else 0.12
+            s.gLat = if (t == 50.0) 0.62 else 0.04
+        })
+        assertFalse(r.events.any { it.type == "harsh_corner" })
+        val p = r.events.filter { it.type == "pothole" }
+        assertEquals(1, p.size)
+        assertEquals("Çukur / bozuk yol", p[0].label)
+        assertEquals(1.1, p[0].value, 1e-9)
+        assertEquals(50.0, p[0].t, 1e-9)
+        assertEquals(100, r.subs.getValue("Viraj"))
+        assertEquals(analyze(build(120, 0.0, { 40.0 })).total, r.total)     // yol durumu puanı düşürmez
+        assertEquals(1.1, r.metrics.maxVertG, 1e-9)
+        assertTrue(coachTips(r).any { "çukur" in it.text })
+    }
+
+    @Test fun singleLateralSpikeWithoutJoltIsNotCorner() {
+        val r = analyze(build(120, 0.0, { 40.0 }) { s, t -> s.gLat = if (t == 50.0) 0.5 else 0.05 })
+        assertFalse(r.events.any { it.type == "harsh_corner" })
+        assertFalse(r.events.any { it.type == "pothole" })   // gVert yok: çukur da yok
+    }
+
+    @Test fun joltsAlternatingWithLateralDoNotMergeIntoCorner() {
+        // darbe sızıntısı tek tek örneklerde; aradaki maskeli örnekler birleştirmeyle viraj yapmamalı
+        val r = analyze(build(120, 0.0, { 40.0 }) { s, t ->
+            val hit = t == 50.0 || t == 51.0 || t == 52.0
+            s.gVert = if (hit) 0.9 else 0.1
+            s.gLat = if (hit) 0.5 else if (t == 50.5 || t == 51.5) 0.38 else 0.05
+        })
+        assertFalse(r.events.any { it.type == "harsh_corner" })
+        assertEquals(1, r.events.count { it.type == "pothole" })      // 1 sn arayla darbeler birleşir
+    }
+
+    @Test fun sustainedLateralWithTurningIsCorner() {
+        // 40 km/s'de 4 sn boyunca 0,42 g ve saniyede ~20° dönüş (merkezkaç ile tutarlı)
+        val r = analyze(build(120, 0.0, { 40.0 }) { s, t ->
+            s.bearing = when { t < 50 -> 0.0; t <= 54 -> (t - 50) * 20.0; else -> 80.0 }
+            s.gLat = if (t in 50.0..54.0) 0.42 else 0.04
+            s.gVert = 0.15
+        })
+        val c = r.events.filter { it.type == "harsh_corner" }
+        assertEquals(1, c.size)
+        assertTrue(c[0].text, "dönüş" in c[0].text)
+        assertFalse(r.events.any { it.type == "pothole" })
+        assertTrue(r.subs.getValue("Viraj") < 100)
+    }
+
+    @Test fun sustainedLateralWithoutHeadingChangeIsNotCorner() {
+        // GPS yönü sabitken yanal ivme (ör. yanlış yönelim/titreşim) viraj sayılmaz
+        val r = analyze(build(120, 0.0, { 40.0 }) { s, t ->
+            s.bearing = 90.0 + if (t.toInt() % 2 == 0) 1.0 else -1.0
+            s.gLat = if (t in 50.0..54.0) 0.42 else 0.04
+        })
+        assertFalse(r.events.any { it.type == "harsh_corner" })
+    }
+
+    @Test fun cornerOnRoughRoadStillDetected() {
+        // bozuk yolda viraj: dikey titreşim yüksek ama yanal ivmeden küçük -> maskelenmez
+        val r = analyze(build(120, 0.0, { 40.0 }) { s, t ->
+            s.bearing = if (t < 50) 0.0 else if (t <= 54) (t - 50) * 20.0 else 80.0
+            s.gLat = if (t in 50.0..54.0) 0.45 else 0.04
+            s.gVert = if (t in 50.0..54.0) 0.42 else 0.1
+        })
+        assertEquals(1, r.events.count { it.type == "harsh_corner" })
+    }
+
+    @Test fun separatePotholesAndSlowSpeedIgnored() {
+        val r = analyze(build(120, 0.0, { t -> if (t < 80) 40.0 else 6.0 }) { s, t ->
+            s.gVert = if (t == 30.0 || t == 40.0 || t == 100.0) 0.9 else 0.1
+        })
+        val p = r.events.filter { it.type == "pothole" }
+        assertEquals(2, p.size)                         // 100. sn'deki darbe 6 km/s'de: sayılmaz
+        assertEquals(listOf(30.0, 40.0), p.map { it.t })
+    }
+
+    @Test fun potholeEventHasReportPosition() {
+        val S = build(120, 0.0, { 40.0 }) { s, t -> s.lat = 41.0 + t * 1e-5; s.lon = 29.0; s.gVert = if (t == 60.0) 1.0 else 0.1 }
+        val rep = TripReport.build(S)
+        val pos = rep.eventPositions.filter { it.event.type == "pothole" }
+        assertEquals(1, pos.size)
+        assertEquals(41.0 + 60 * 1e-5, pos[0].lat, 1e-9)
+        assertTrue(reportHtml(rep).contains("Çukur / bozuk yol"))
+    }
+
     @Test fun terrainMetrics() {
         val r = analyze(build(240, 4.0, { 54.0 }))
         val m = r.metrics

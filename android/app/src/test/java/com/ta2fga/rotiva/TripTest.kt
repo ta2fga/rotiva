@@ -61,6 +61,30 @@ class TripTest {
         assertEquals(1234.5, back.t, 0.01)
     }
 
+    @Test fun csvRoundTripWithVerticalAndOldCsvWithout() {
+        val s = smp(1234.5, 42.0).apply { gLat = 0.05; gVert = 0.873 }
+        val back = sampleFromCsv(sampleToCsv(s).split(","), FIELDS.withIndex().associate { it.value to it.index })!!
+        assertEquals(0.873, back.gVert!!, 1e-3)
+        assertEquals(0.05, back.gLat!!, 1e-4)
+        assertEquals(FIELDS.size, sampleToCsv(s).split(",").size)
+
+        // eski kayıt: gVert sütunu yok
+        val old = tmp.newFile("old.csv")
+        old.writeText("t,rpm,speed,load,coolant,map,maf,frp,gear,lat,lon,gpsSpeed,bearing,alt,acc,baroAlt,gLong,gLat\n" +
+            "1000.00,2000.0,40.00,30.0,85.0,,,,3,41.0000000,29.0000000,40.00,90.0,100.00,4.0,,0.0100,0.4000\n" +
+            "1000.50,2000.0,40.00,30.0,85.0,,,,3,41.0000100,29.0000000,40.00,90.0,100.00,4.0,,,\n")
+        val rows = readSamples(old)
+        assertEquals(2, rows.size)
+        assertNull(rows[0].gVert)
+        assertEquals(0.4, rows[0].gLat!!, 1e-9)
+        assertNull(rows[1].gLat)
+
+        // yeni kayıt dosyası: başlıkta gVert var ve geri okunur
+        val store = TripStore(tmp.newFolder("t2"))
+        store.csv("x").writeText(FIELDS.joinToString(",") + "\n" + sampleToCsv(s) + "\n")
+        assertEquals(0.873, store.loadSamples("x")[0].gVert!!, 1e-3)
+    }
+
     @Test fun reportBuildsAndHtmlContainsSections() {
         val S = (0..400).map { Sample(1000.0 + it * 0.5, speed = 50.0, rpm = 2000.0, gear = 4, alt = 100 + it * 0.1, lat = 41.0 + it * 1e-4, lon = 29.0) }
         val r = TripReport.build(S)
