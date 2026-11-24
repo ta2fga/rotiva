@@ -194,6 +194,7 @@ class TripRecorder(
 fun buildSummary(id: String, S: List<Sample>, res: ScoreResult, pauses: List<Pair<Double, Double>>, gear: GearEstimator): JSONObject {
     val m = res.metrics
     val tips = coachTips(res)
+    val (gr, gc) = gear.snapshot()          // aynı uzunlukta (kayıt sırasında vites sayısı değişebilir)
     return JSONObject()
         .put("id", id).put("start_ts", S.first().t).put("end_ts", S.last().t)
         .put("pauses", JSONArray(pauses.map { JSONArray(listOf(it.first, it.second)) }))
@@ -209,6 +210,6 @@ fun buildSummary(id: String, S: List<Sample>, res: ScoreResult, pauses: List<Pai
             .put("max_speed", m.maxSpeed).put("ascent", m.ascent).put("descent", m.descent)
             .put("has_altitude", m.hasAltitude).put("max_alt", m.maxAlt ?: JSONObject.NULL)
             .put("min_alt", m.minAlt ?: JSONObject.NULL))
-        .put("ratios", JSONArray(gear.ratios.map { Math.round(it * 100) / 100.0 }))
-        .put("gear_counts", JSONArray(gear.counts.toList()))
+        .put("ratios", JSONArray(gr.map { Math.round(it * 100) / 100.0 }))
+        .put("gear_counts", JSONArray(gc.toList()))
 }

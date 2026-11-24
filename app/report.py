@@ -83,8 +83,9 @@ def build_trip_html(j: dict, samples: list) -> str:
     ev = [(f"{e['t']:.0f} sn", e["label"], e["text"]) for e in j.get("events", [])]
     when = datetime.fromtimestamp(j["start_ts"])
     rt = j.get("ratios") or []
-    cnt = j.get("gear_counts") or [0] * len(rt)
-    ratios = ", ".join(f"{i + 1}. vites {r:.1f}{'' if cnt[i] >= 40 else ' (tahmin)'}" for i, r in enumerate(rt))
+    cnt = j.get("gear_counts") or []          # uzunluğu oranlarla aynı olmayabilir (eski/yarışlı kayıt): eksik = tahmin
+    ratios = ", ".join(f"{i + 1}. vites {r:.1f}{'' if i < len(cnt) and cnt[i] >= 40 else ' (tahmin)'}"
+                       for i, r in enumerate(rt))
     return f"""<html><head><meta charset="utf-8"><style>{CSS}</style></head><body>
 <h1>{escape(APP_NAME)} - Sürüş Raporu</h1>
 <p class="muted">{escape(APP_VEHICLE)} &middot; {when:%d.%m.%Y %H:%M} &middot; Sürüm {APP_VERSION}</p>

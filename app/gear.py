@@ -235,6 +235,9 @@ class GearEstimator:
         self.last_pair_t = -1e9
         self.tracker = ShiftTracker(self.cfg["gap_reset_s"])
         self.dirty = False
+        # sıfırlamadan sonra bu ana kadar vites yayınlanmaz: kayıtta eski numaralı vitesten yeni numaralıya puanlamada
+        # sahte "geçiş" sayılmasın diye gap_reset_s'den uzun (ShiftTracker zinciri kopar). Gear.kt muteUntil ile aynı.
+        self._mute_until = -1e9
 
     def _valid(self, r) -> bool:
         """Akla yatkın şanzıman: aralık içinde, artan, ardışık adımlar makul (varsayılana bağlı DEĞİL)."""
@@ -253,14 +256,14 @@ class GearEstimator:
     @property
     def gear(self) -> Optional[int]:
         """Kayıt/puanlama için vites (boşta ve bilinmiyor = None)."""
-        return self.state if self.state and self.state >= 1 else None
+        return self.state if self.state and self.state >= 1 and self.last_pair_t >= self._mute_until else None
 
     @property
     def neutral(self) -> bool:
         return self.state == NEUTRAL
 
     def state_at(self, now: float) -> Optional[int]:
-        return None if now - self.last_pair_t > self.cfg["stale_s"] else self.state
+        return None if now - self.last_pair_t > self.cfg["stale_s"] or now < self._mute_until else self.state
 
     def gear_at(self, now: float) -> Optional[int]:
         s = self.state_at(now)
@@ -300,6 +303,7 @@ class GearEstimator:
         self.win.clear()
         self.aligner.clear()
         self.state, self._cand, self._cand_n = None, None, 0
+        self._mute_until = self.last_pair_t + self.cfg["gap_reset_s"] + 0.5
         self.dirty = True
 
     def set_gear_count(self, n: int) -> bool:

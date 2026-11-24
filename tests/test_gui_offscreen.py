@@ -69,6 +69,9 @@ def drive_test(app, w):
     assert len(S) >= 15
     html = report.build_trip_html(j, S)
     assert "Sürüş Raporu" in html and "<svg" in html
+    # oran ve sayaç uzunlukları farklı (eski/yarışlı kayıt): rapor çökmez, eksik sayaç "tahmin"
+    j2 = dict(j, ratios=[9.0, 15.6, 23.4, 31.2, 39.0, 46.8], gear_counts=[50, 50, 50, 50, 50])
+    assert "6. vites 46.8 (tahmin)" in report.build_trip_html(j2, S)
     w.grab()
     print("sürüş testi OK:", j["total"], len(S), "örnek")
 

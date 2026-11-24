@@ -224,9 +224,14 @@ class GearEstimator(
         private set
     val tracker = ShiftTracker(cfg.gapResetS)
     var dirty = false
+    /**
+     * Sıfırlamadan sonra bu ana kadar vites yayınlanmaz (bilinmiyor). Kayıttaki eski numaralı vitesten yeni numaralıya
+     * puanlamada sahte "geçiş" sayılmasın diye [GearCfg.gapResetS]'den uzun tutulur (ShiftTracker zinciri kopar).
+     */
+    private var muteUntil = -1e9
 
     /** Kayıt/puanlama için vites (boşta ve bilinmiyor = null). */
-    val gear: Int? get() = state?.takeIf { it >= 1 }
+    val gear: Int? get() = state?.takeIf { it >= 1 && lastPairT >= muteUntil }
     val neutral: Boolean get() = state == NEUTRAL
     val shifts get() = tracker.shifts
 
@@ -260,6 +265,7 @@ class GearEstimator(
         ratios = defaultRatios(n); counts = IntArray(n); dirty = true
         hist = DoubleArray(nb); scale = 1.0; pending = 0
         win.clear(); aligner.clear(); state = null; cand = null; candN = 0
+        muteUntil = lastPairT + cfg.gapResetS + 0.5
     }
 
     /**
@@ -275,6 +281,9 @@ class GearEstimator(
         tracker.last = null                          // eski numaralı vitesten yeni numaralıya "geçiş" sayılmasın
         return true
     }
+
+    /** Oranlar ve sayaçlar tek kilitte (aynı uzunlukta; [setGearCount] başka iş parçacığından çağrılabilir). */
+    @Synchronized fun snapshot(): Pair<DoubleArray, IntArray> = ratios.copyOf() to counts.copyOf()
 
     /** Bu vitesin merkezi doğrudan veriden (yeterli gözlemli tepe) mi geliyor? */
     fun learned(g: Int) = counts.getOrNull(g - 1)?.let { it >= cfg.learnedCount } ?: false
@@ -504,7 +513,7 @@ class GearEstimator(
     }
 
     /** [now] anındaki yayınlanabilir durum (hizalı veri eskiyse null = bilinmiyor). */
-    @Synchronized fun stateAt(now: Double): Int? = if (now - lastPairT > cfg.staleS) null else state
+    @Synchronized fun stateAt(now: Double): Int? = if (now - lastPairT > cfg.staleS || now < muteUntil) null else state
     fun gearAt(now: Double): Int? = stateAt(now)?.takeIf { it >= 1 }
 
     /** Gösterim: "1".."n", "N" (boşta/debriyaj) ya da "—" (bilinmiyor). */

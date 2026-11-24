@@ -467,9 +467,9 @@ class DrivePage(QWidget):
                                            if ev else "yok"))
         rt = j.get("ratios")
         if rt:
-            cnt = j.get("gear_counts") or [0] * len(rt)
+            cnt = j.get("gear_counts") or []      # uzunluk oranlarla aynı olmayabilir: eksik = tahmin
             self.ratio_lbl.setText("Vites oranları (km/s / 1000 d/dk): " + ", ".join(
-                f"{i + 1}. {r:.1f}{'' if cnt[i] >= 40 else ' (tahmin)'}" for i, r in enumerate(rt)))
+                f"{i + 1}. {r:.1f}{'' if i < len(cnt) and cnt[i] >= 40 else ' (tahmin)'}" for i, r in enumerate(rt)))
         self.btn_html.setEnabled(True)
 
     def export_html(self):

@@ -10,7 +10,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("APPDATA", tempfile.mkdtemp())
 
 from app import coach, scoring                              # noqa: E402
-from app.gear import DEFAULT_RATIOS, GEAR_COUNTS, NEUTRAL, GearEstimator, default_ratios     # noqa: E402
+from app.gear import CFG, DEFAULT_RATIOS, GEAR_COUNTS, NEUTRAL, GearEstimator, default_ratios     # noqa: E402
+CFG_GAP = CFG["gap_reset_s"]
 from app.scoring import Sample                              # noqa: E402
 from app.simulator import DriveCycle                        # noqa: E402
 from app.trip import TripRecorder, list_trips, read_samples  # noqa: E402
@@ -275,6 +276,28 @@ class GearCountTest(unittest.TestCase):
         self.assertEqual(GearEstimator.from_dict(d, n=6).ratios, [round(r, 3) for r in g.ratios])
         other = GearEstimator.from_dict(d, n=5)                     # ayar farklı: öğrenme atılır
         self.assertEqual((other.n, other.ratios, sum(other.hist)), (5, DEFAULT_RATIOS, 0.0))
+
+    def test_change_mid_trip_no_fake_shift(self):
+        """Kayıt sırasında vites sayısı değişince eski numaralı vitesten yeni numaralıya sahte geçiş sayılmaz
+        (puanlamada geç/erken vites büyütme cezası doğmasın); vites ~gap_reset_s sonra yeniden yayınlanır."""
+        from app.gear import detect_shifts
+        g, seq, t = GearEstimator(n=5), [], 0.0
+        while t < 20:                                          # 5. vites (r=37): 74 km/s, 2000 d/dk
+            seq.append((t, 2000.0, g.update(t, 2000.0, 74.0)))
+            t += 0.25
+        self.assertEqual(g.gear, 5)
+        self.assertTrue(g.set_gear_count(6))                   # varsayılan 6 vites şeklinde r=37 -> 6. vites
+        first = None
+        while t < 40:
+            x = g.update(t, 2000.0, 74.0)
+            seq.append((t, 2000.0, x))
+            if x is not None and first is None:
+                first = t
+            t += 0.25
+        self.assertEqual(g.gear, 6)
+        self.assertGreater(first, 20 + CFG_GAP)
+        self.assertEqual(detect_shifts(seq), [])
+        self.assertEqual(g.label(t), "6")
 
     def test_round_trip_and_old_v3(self):
         for n in GEAR_COUNTS:

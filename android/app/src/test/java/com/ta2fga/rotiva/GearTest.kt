@@ -312,6 +312,28 @@ class GearTest {
         assertArrayEquals(defaultRatios(4), GearEstimator.fromJson(j, 4).ratios, 0.0)
     }
 
+    /** Kayıt sırasında vites sayısı değişince eski numaralı vitesten yeni numaralıya sahte geçiş sayılmaz. */
+    @Test fun changingGearCountMidTripDoesNotFakeShift() {
+        val g = GearEstimator()
+        val seq = ArrayList<Triple<Double, Double?, Int?>>()
+        var t = 0.0
+        while (t < 20) { seq.add(Triple(t, 2000.0, g.update(t, 2000.0, 74.0))); t += 0.25 }   // 5. vites (r=37)
+        assertEquals(5, g.gear)
+        assertTrue(g.setGearCount(6))                          // varsayılan 6 vites şeklinde r=37 -> 6. vites
+        var first: Double? = null
+        while (t < 40) {
+            val x = g.update(t, 2000.0, 74.0); seq.add(Triple(t, 2000.0, x))
+            if (x != null && first == null) first = t
+            t += 0.25
+        }
+        assertEquals(6, g.gear)
+        assertTrue("ilk vites $first", first!! > 20 + GearCfg().gapResetS)
+        assertTrue(detectShifts(seq).isEmpty())
+        assertEquals("6", g.label(t))
+        val (r, c) = g.snapshot()
+        assertEquals(6, r.size); assertEquals(6, c.size)
+    }
+
     @Test fun jsonRoundTripWithGearCountAndOldV3LoadsAsFive() {
         for (n in GEAR_COUNTS) {
             val (g, _, _) = driveN(DoubleArray(n) { defaultRatios(n)[it] * 1.1 }, loops = 2)
