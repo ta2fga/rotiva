@@ -48,6 +48,11 @@ class Prefs(ctx: Context) {
         get() = sp.getString("gear", null)?.let { runCatching { JSONObject(it) }.getOrNull() }
         set(v) { sp.edit().putString("gear", v?.toString()).apply() }
 
+    /** Rapor hız grafiğinde görünen seriler (encodeSeries biçimi); raporlar arasında korunur. */
+    var speedChartSeries: String?
+        get() = sp.getString("speed_chart_series", null)
+        set(v) { sp.edit().putString("speed_chart_series", v).apply() }
+
     var lastDevice: String?
         get() = sp.getString("last_device", null)
         set(v) { sp.edit().putString("last_device", v).apply() }

@@ -95,6 +95,11 @@ fun ReportBody(r: TripReport, ctx: Context) {
     var routeMode by remember { mutableStateOf(RouteColor.SPEED) }
     var fullscreen by remember { mutableStateOf(false) }
     var showEvents by rememberSaveable { mutableStateOf(true) }
+    // hız grafiği serileri: döndürmede korunur, son seçim Prefs'e yazılır (sonraki raporlar da aynı açılır)
+    var speedSeriesRaw by rememberSaveable {
+        mutableStateOf(encodeSeries(decodeSeries(runCatching { Engine.prefs.speedChartSeries }.getOrNull())))
+    }
+    val speedSeries = decodeSeries(speedSeriesRaw)
     if (fullscreen) FullscreenMap(r, routeMode, { routeMode = it }, showEvents, { showEvents = it }, cursor) { fullscreen = false }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("${fmtDate(r.startTs)} - ${fmtDate(r.endTs)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -143,11 +148,14 @@ fun ReportBody(r: TripReport, ctx: Context) {
         if (r.track.size >= 2) {
             SectionTitle("Hız, devir ve vites (zamana göre)")
             AppCard(Modifier.fillMaxWidth()) {
-                ProfileChart(r, ChartKind.SPEED, cursor, { cursor = it }, ex.series[0], ex.series[2], ex.series[1], ex.crit, ex.border,
-                    MaterialTheme.colorScheme.onSurfaceVariant, Modifier.fillMaxWidth().height(230.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(top = 4.dp)) {
-                    Legend("Hız", ex.series[0]); Legend("Devir (0-4000+)", ex.series[2]); Legend("Vites", ex.series[1]); Legend("Olay", ex.crit)
+                SeriesChips(speedSeries, mapOf(SpeedSeries.SPEED to ex.series[0], SpeedSeries.RPM to ex.series[2],
+                    SpeedSeries.GEAR to ex.series[1]), ex.crit) { s ->
+                    val v = encodeSeries(toggleSeries(speedSeries, s))
+                    speedSeriesRaw = v
+                    runCatching { Engine.prefs.speedChartSeries = v }
                 }
+                ProfileChart(r, ChartKind.SPEED, cursor, { cursor = it }, ex.series[0], ex.series[2], ex.series[1], ex.crit, ex.border,
+                    MaterialTheme.colorScheme.onSurfaceVariant, Modifier.fillMaxWidth().height(230.dp), speedSeries)
             }
         }
         if (r.track.count { it.lat != null } >= 2) {
@@ -190,6 +198,32 @@ fun Legend(t: String, c: Color) {
     }
 }
 
+/**
+ * Hız grafiği seri seçicisi: her çip serinin renginde (lejant görevi de görür). Seçili çipte onay işareti,
+ * seçili olmayanda soluk renk noktası. Son seçili seri kapatılamaz (bkz. [toggleSeries]).
+ */
+@Composable
+fun SeriesChips(visible: Set<SpeedSeries>, colors: Map<SpeedSeries, Color>, evC: Color, onToggle: (SpeedSeries) -> Unit) {
+    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        SpeedSeries.values().forEach { s ->
+            val c = colors[s] ?: MaterialTheme.colorScheme.primary
+            val on = s in visible
+            FilterChip(
+                selected = on, onClick = { onToggle(s) },
+                label = { Text(s.label, color = if (on) c else MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.SemiBold) },
+                leadingIcon = {
+                    if (on) Icon(Icons.Filled.Check, contentDescription = null, tint = c, modifier = Modifier.size(FilterChipDefaults.IconSize))
+                    else Canvas(Modifier.size(10.dp)) { drawCircle(c.copy(alpha = 0.45f)) }
+                },
+                colors = FilterChipDefaults.filterChipColors(selectedContainerColor = c.copy(alpha = 0.16f)),
+                border = FilterChipDefaults.filterChipBorder(enabled = true, selected = on,
+                    borderColor = c.copy(alpha = 0.5f), selectedBorderColor = c, selectedBorderWidth = 1.dp),
+            )
+        }
+        Legend("Olay", evC)
+    }
+}
 
 @Composable
 fun RouteControls(

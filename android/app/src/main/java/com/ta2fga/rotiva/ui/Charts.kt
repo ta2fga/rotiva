@@ -27,11 +27,13 @@ enum class ChartKind { ALT, SPEED }
 /**
  * Izgaralı profil grafiği: sol Y ekseni değerleri, alt X ekseni (km veya dk) etiketleri, dokun/sürükle imleci ve ipucu.
  * [cursor] iz noktası dizinidir (TrackPoint.idx); harita ile eşzamanlıdır.
+ * SPEED türünde yalnız [visible] seriler çizilir; sol eksen ilk görünen serinin ölçeğini gösterir (bkz. [speedAxis]).
  */
 @Composable
 fun ProfileChart(
     r: TripReport, kind: ChartKind, cursor: Int?, onCursor: (Int?) -> Unit,
     lineC: Color, rpmC: Color, gearC: Color, evC: Color, gridC: Color, textC: Color, modifier: Modifier,
+    visible: Set<SpeedSeries> = SpeedSeries.values().toSet(),
 ) {
     val tm = rememberTextMeasurer()
     val track = r.track
@@ -53,9 +55,8 @@ fun ProfileChart(
         val left = 46.dp.toPx(); val bottom = 20.dp.toPx(); val top = 6.dp.toPx(); val right = 10.dp.toPx()
         val w = size.width - left - right; val h = size.height - top - bottom
         val x0 = xs.first(); val x1 = max(xs.last(), x0 + 1e-6)
-        val yTicks = if (kind == ChartKind.ALT) {
-            niceTicks(pts.minOf { it.alt!! }, pts.maxOf { it.alt!! }, 4)
-        } else niceTicks(0.0, max(60.0, pts.mapNotNull { it.speed }.maxOrNull() ?: 60.0), 4)
+        val axis = if (kind == ChartKind.SPEED) speedAxis(visible, pts) else null
+        val yTicks = axis?.ticks ?: niceTicks(pts.minOf { it.alt!! }, pts.maxOf { it.alt!! }, 4)
         val yLo = yTicks.niceMin; val yHi = max(yTicks.niceMax, yLo + 1e-6)
         val xTicks = niceTicks(x0, x1, 5)
         fun px(x: Double) = (left + (x - x0) / (x1 - x0) * w).toFloat()
@@ -77,7 +78,7 @@ fun ProfileChart(
             val t = tm.measure(txt, label)
             drawText(t, topLeft = Offset(min(max(x - t.size.width / 2f, left - 4f), size.width - t.size.width.toFloat()), top + h + 3.dp.toPx()))
         }
-        val unit = tm.measure(if (kind == ChartKind.ALT) "km  /  m" else "dk  /  km/s", label)
+        val unit = tm.measure(axis?.unitLabel ?: "km  /  m", label)
         drawText(unit, topLeft = Offset(0f, top + h + 3.dp.toPx()))
 
         // seri çizgileri
@@ -91,11 +92,13 @@ fun ProfileChart(
             drawPath(fill, lineC.copy(alpha = 0.22f))
             drawPath(path, lineC, style = Stroke(width = 4f))
         } else {
-            val rMax = max(4000.0, pts.mapNotNull { it.rpm }.maxOrNull() ?: 4000.0)
-            fun series(sel: (TrackPoint) -> Double?, maxV: Double, c: Color, wd: Float, step: Boolean = false) {
+            // her seri kendi 0..tavan ölçeğinde; eksendeki seri eksen tavanını kullanır
+            fun series(s: SpeedSeries, c: Color, wd: Float, step: Boolean = false) {
+                if (s !in visible) return
+                val maxV = if (s == axis!!.series) yHi else seriesTicks(s, pts).niceMax
                 val p = Path(); var started = false; var lastY = 0f
                 pts.forEachIndexed { i, pt ->
-                    val v = sel(pt)
+                    val v = seriesValue(s, pt)
                     if (v == null) { started = false; return@forEachIndexed }
                     val x = px(xs[i]); val y = (top + h - v / maxV * h).toFloat()
                     if (!started) { p.moveTo(x, y); started = true } else { if (step) p.lineTo(x, lastY); p.lineTo(x, y) }
@@ -103,9 +106,9 @@ fun ProfileChart(
                 }
                 drawPath(p, c, style = Stroke(width = wd))
             }
-            series({ it.rpm }, rMax, rpmC.copy(alpha = 0.85f), 3f)
-            series({ it.speed }, yHi, lineC, 4f)
-            series({ it.gear?.toDouble() }, maxOf(6.0, (pts.maxOfOrNull { it.gear ?: 0 } ?: 0) + 1.0), gearC, 3f, step = true)   // 4..7 vites
+            series(SpeedSeries.RPM, rpmC.copy(alpha = 0.85f), 3f)
+            series(SpeedSeries.SPEED, lineC, 4f)
+            series(SpeedSeries.GEAR, gearC, 3f, step = true)
             val t0 = r.samples.firstOrNull()?.t ?: 0.0
             r.result.events.forEach { e ->
                 val x = px((e.ts - t0) / 60.0)
@@ -123,12 +126,19 @@ fun ProfileChart(
             if (cx in x0..x1) {
                 val x = px(cx)
                 drawLine(textC, Offset(x, top), Offset(x, top + h), 2f)
-                val yv = if (kind == ChartKind.ALT) cp.alt else cp.speed
-                if (yv != null) {
-                    drawCircle(Color.White, 9f, Offset(x, py(yv)))
-                    drawCircle(lineC, 6f, Offset(x, py(yv)))
+                if (axis == null) {
+                    cp.alt?.let { drawCircle(Color.White, 9f, Offset(x, py(it))); drawCircle(lineC, 6f, Offset(x, py(it))) }
+                } else {
+                    // görünen her serinin imleç noktası, kendi renginde
+                    for ((s, c) in listOf(SpeedSeries.RPM to rpmC, SpeedSeries.GEAR to gearC, SpeedSeries.SPEED to lineC)) {
+                        if (s !in visible) continue
+                        val v = seriesValue(s, cp) ?: continue
+                        val maxV = if (s == axis.series) yHi else seriesTicks(s, pts).niceMax
+                        val y = (top + h - v / maxV * h).toFloat()
+                        drawCircle(Color.White, 9f, Offset(x, y)); drawCircle(c, 6f, Offset(x, y))
+                    }
                 }
-                val tip = tm.measure(if (kind == ChartKind.ALT) altTooltip(cp) else speedTooltip(cp),
+                val tip = tm.measure(if (axis == null) altTooltip(cp) else speedTooltip(cp, visible),
                     TextStyle(fontSize = 11.sp, color = Color.White))
                 val bw = tip.size.width + 16f; val bh = tip.size.height + 10f
                 val bx = min(max(x - bw / 2, left), size.width - bw)
