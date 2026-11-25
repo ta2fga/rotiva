@@ -95,6 +95,27 @@ fun seriesValue(s: SpeedSeries, p: TrackPoint): Double? = when (s) {
     SpeedSeries.GEAR -> p.gear?.toDouble()
 }
 
+/** İzde en az bir değeri olan seriler (ör. vites ayarı yoksa GEAR, OBD devir vermiyorsa RPM yoktur). */
+fun seriesWithData(pts: List<TrackPoint>): Set<SpeedSeries> =
+    SpeedSeries.values().filter { s -> pts.any { seriesValue(s, it) != null } }.toSet()
+
+/**
+ * Gerçekte çizilecek seriler: seçimin verisi olan kısmı. Seçili serilerin hiçbirinde veri yoksa
+ * (ör. kayıtlı seçim yalnız "Vites" ama bu sürüşte vites yok) boş grafik yerine verisi olan ilk seri gösterilir.
+ */
+fun effectiveSeries(selected: Set<SpeedSeries>, available: Set<SpeedSeries>): Set<SpeedSeries> {
+    val v = selected intersect available
+    if (v.isNotEmpty()) return v
+    return SpeedSeries.values().firstOrNull { it in available }?.let { setOf(it) } ?: selected
+}
+
+/**
+ * Çip tıklaması: görünen (etkin) seçim üzerinde [toggleSeries]; bu sürüşte verisi olmayan ama kayıtlı seçimde
+ * bulunan seriler korunur (vitesli bir sonraki raporda yine açık gelsin).
+ */
+fun toggleSelected(selected: Set<SpeedSeries>, available: Set<SpeedSeries>, s: SpeedSeries): Set<SpeedSeries> =
+    toggleSeries(effectiveSeries(selected, available), s) + (selected - available)
+
 /** İpucu: yalnız görünen serilerin değerleri + süre. */
 fun speedTooltip(p: TrackPoint, visible: Set<SpeedSeries>): String {
     val parts = ArrayList<String>()

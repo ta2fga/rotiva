@@ -148,14 +148,16 @@ fun ReportBody(r: TripReport, ctx: Context) {
         if (r.track.size >= 2) {
             SectionTitle("Hız, devir ve vites (zamana göre)")
             AppCard(Modifier.fillMaxWidth()) {
-                SeriesChips(speedSeries, mapOf(SpeedSeries.SPEED to ex.series[0], SpeedSeries.RPM to ex.series[2],
+                val available = remember(r) { seriesWithData(r.track) }
+                val shown = effectiveSeries(speedSeries, available)
+                SeriesChips(shown, available, mapOf(SpeedSeries.SPEED to ex.series[0], SpeedSeries.RPM to ex.series[2],
                     SpeedSeries.GEAR to ex.series[1]), ex.crit) { s ->
-                    val v = encodeSeries(toggleSeries(speedSeries, s))
+                    val v = encodeSeries(toggleSelected(speedSeries, available, s))
                     speedSeriesRaw = v
                     runCatching { Engine.prefs.speedChartSeries = v }
                 }
                 ProfileChart(r, ChartKind.SPEED, cursor, { cursor = it }, ex.series[0], ex.series[2], ex.series[1], ex.crit, ex.border,
-                    MaterialTheme.colorScheme.onSurfaceVariant, Modifier.fillMaxWidth().height(230.dp), speedSeries)
+                    MaterialTheme.colorScheme.onSurfaceVariant, Modifier.fillMaxWidth().height(230.dp), shown)
             }
         }
         if (r.track.count { it.lat != null } >= 2) {
@@ -203,21 +205,25 @@ fun Legend(t: String, c: Color) {
  * seçili olmayanda soluk renk noktası. Son seçili seri kapatılamaz (bkz. [toggleSeries]).
  */
 @Composable
-fun SeriesChips(visible: Set<SpeedSeries>, colors: Map<SpeedSeries, Color>, evC: Color, onToggle: (SpeedSeries) -> Unit) {
+fun SeriesChips(visible: Set<SpeedSeries>, available: Set<SpeedSeries>, colors: Map<SpeedSeries, Color>, evC: Color,
+                onToggle: (SpeedSeries) -> Unit) {
     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 2.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
         SpeedSeries.values().forEach { s ->
             val c = colors[s] ?: MaterialTheme.colorScheme.primary
             val on = s in visible
+            val has = s in available   // bu sürüşte verisi yoksa çip devre dışı
             FilterChip(
-                selected = on, onClick = { onToggle(s) },
-                label = { Text(s.label, color = if (on) c else MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.SemiBold) },
+                selected = on, onClick = { onToggle(s) }, enabled = has,
+                label = { Text(if (has) s.label else "${s.label} (veri yok)",
+                    color = if (on) c else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (has) 1f else 0.5f),
+                    fontWeight = FontWeight.SemiBold) },
                 leadingIcon = {
                     if (on) Icon(Icons.Filled.Check, contentDescription = null, tint = c, modifier = Modifier.size(FilterChipDefaults.IconSize))
                     else Canvas(Modifier.size(10.dp)) { drawCircle(c.copy(alpha = 0.45f)) }
                 },
                 colors = FilterChipDefaults.filterChipColors(selectedContainerColor = c.copy(alpha = 0.16f)),
-                border = FilterChipDefaults.filterChipBorder(enabled = true, selected = on,
+                border = FilterChipDefaults.filterChipBorder(enabled = has, selected = on,
                     borderColor = c.copy(alpha = 0.5f), selectedBorderColor = c, selectedBorderWidth = 1.dp),
             )
         }

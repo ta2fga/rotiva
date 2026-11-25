@@ -113,4 +113,19 @@ class ChartTest {
         assertEquals("Devir: 2151 · $t", speedTooltip(p, setOf(R)))
         assertEquals("Vites: — · $t", speedTooltip(TrackPoint(0, 125.0, 1.0, null, null, null, null, 63.4, 2150.6, null), setOf(G)))
     }
+
+    @Test fun seriesWithoutDataFallsBack() {
+        val noGear = listOf(pt(0, 10.0, 900.0, null), pt(1, 40.0, 2100.0, null))
+        val av = seriesWithData(noGear)
+        assertEquals(setOf(S, R), av)
+        assertEquals(setOf(S), effectiveSeries(setOf(S, G), av))      // vites yok: yalnız hız
+        assertEquals(setOf(S), effectiveSeries(setOf(G), av))         // boş grafik yerine verisi olan ilk seri
+        assertEquals(setOf(R), effectiveSeries(setOf(G), seriesWithData(listOf(pt(0, null, 800.0, null)))))  // hız yok: devir
+        assertEquals(setOf(G), effectiveSeries(setOf(G), emptySet())) // hiç veri yok: seçim aynen
+        // çip: görünen seçim üzerinde çalışır, verisi olmayan kayıtlı seri korunur
+        assertEquals(setOf(S, R, G), toggleSelected(setOf(G), av, R))
+        assertEquals(setOf(S, G), toggleSelected(setOf(G), av, S))      // görünen tek seri kapatılamaz
+        assertEquals(setOf(R, G), toggleSelected(setOf(S, R, G), av, S))
+        assertEquals(setOf(S, R), toggleSelected(setOf(S), setOf(S, R, G), R))
+    }
 }
