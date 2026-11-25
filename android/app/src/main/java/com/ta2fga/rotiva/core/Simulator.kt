@@ -7,8 +7,13 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
 
-/** Demo sürüş döngüsü (desktop app/simulator.py DriveCycle): şehir + otoyol, vites geçişleri, birkaç sert olay. */
-class DriveCycle {
+/**
+ * Demo sürüş döngüsü (desktop app/simulator.py DriveCycle): şehir + otoyol, vites geçişleri, birkaç sert olay.
+ * [ratios]: aracın gerçek vites oranları, [segs]: sürüş profili (testlerde farklı araç/sürüş için).
+ */
+class DriveCycle(val ratios: DoubleArray = TRUE_RATIOS, val segs: List<Seg> = SEGS) {
+    val length: Double = segs.last().end
+
     class Seg(val end: Double, val speed: Double, val gear: Int, val load: Double? = null, val wob: Double = 0.0)
     data class Point(val speed: Double, val rpm: Double, val gear: Int?, val load: Double, val coolant: Double)
 
@@ -27,17 +32,49 @@ class DriveCycle {
             Seg(110.0, 46.0, 5, 82.0), Seg(116.0, 58.0, 5, 82.0),
             Seg(126.0, 0.0, 0), Seg(131.0, 0.0, 0),
         )
+
+        /**
+         * Herhangi bir vites sayısı (len(ratios)) için genel sürüş profili: kalkış, her viteste hızlanma (~2500 d/dk'ya)
+         * + kararlı bölüm, en üstte seyir, ara viteslere küçülterek (~2000 d/dk) şehir bölümü, duruş.
+         * Desktop app/simulator.py DriveCycle.segs_for ile aynı.
+         */
+        fun segsFor(ratios: DoubleArray): List<Seg> {
+            val out = ArrayList<Seg>()
+            var t = 4.0
+            out.add(Seg(t, 0.0, 0))
+            for (g in 1..ratios.size) {
+                val v = ratios[g - 1] * 2.5
+                t += 3; out.add(Seg(t, v, g))
+                t += 5; out.add(Seg(t, v, g))
+            }
+            val top = ratios.size
+            t += 8; out.add(Seg(t, ratios[top - 1] * 2.5, top, null, 3.0))
+            t += 4; out.add(Seg(t, ratios[top - 1] * 1.6, top))
+            for (g in top - 1 downTo 2) {
+                val v = ratios[g - 1] * 2.0
+                t += 2; out.add(Seg(t, v, g))
+                t += 4; out.add(Seg(t, v, g))
+            }
+            t += 4; out.add(Seg(t, 0.0, 0))
+            t += 4; out.add(Seg(t, 0.0, 0))
+            return out
+        }
+
+        /** [ratios] uzunluğunda (4..7) vitesli araç için genel profilli döngü. */
+        fun forGearbox(ratios: DoubleArray) = DriveCycle(ratios, segsFor(ratios))
     }
 
+    val nGears: Int get() = ratios.size
+
     fun at(t: Double): Point {
-        val tc = t % LENGTH
+        val tc = t % length
         var prevT = 0.0; var prevV = 0.0; var prevG = 0
         var seg: Seg? = null
-        for (sg in SEGS) {
+        for (sg in segs) {
             if (tc <= sg.end) { seg = sg; break }
             prevT = sg.end; prevV = sg.speed; prevG = sg.gear
         }
-        val sg = seg ?: SEGS.last()
+        val sg = seg ?: segs.last()
         val f = (tc - prevT) / max(sg.end - prevT, 1e-6)
         var v = prevV + (sg.speed - prevV) * f
         val acc = (sg.speed - prevV) / max(sg.end - prevT, 1e-6) / 3.6
@@ -48,10 +85,10 @@ class DriveCycle {
         var gear: Int? = g
         var rpm: Double
         if (g >= 1) {
-            rpm = max(IDLE, v / TRUE_RATIOS[g - 1] * 1000)
+            rpm = max(IDLE, v / ratios[g - 1] * 1000)
             if (shifting) {
                 gear = null
-                val old = max(IDLE, v / TRUE_RATIOS[prevG - 1] * 1000)
+                val old = max(IDLE, v / ratios[prevG - 1] * 1000)
                 rpm = max(IDLE, old * (1 - 0.35 * (tc - prevT) / SHIFT_S))
             }
         } else { rpm = IDLE; gear = null }
@@ -198,6 +235,7 @@ class DemoWorld {
     private var lastSpeed = 0.0
     var lat = LAT0; var lon = LON0; var alt = 100.0; var bearing = 0.0
     var gLong = 0.0; var gLat = 0.0
+    var gVert = 0.0      // dikey darbe tepe değeri, g (yol titreşimi + ara sıra çukur)
 
     companion object {
         const val LAT0 = 41.0200
@@ -225,6 +263,8 @@ class DemoWorld {
             pts.mapIndexed { i, p -> if (i > 0) d += Math.hypot(p.first - pts[i - 1].first, p.second - pts[i - 1].second); Triple(p.first, p.second, d) }
         }
         val LOOP_M: Double get() = PATH.last().third
+        /** Çevrim üzerindeki çukurların konumu (m) ve darbe büyüklüğü (g, 40 km/s'de). */
+        val POTHOLES = listOf(850.0 to 0.85, 2650.0 to 1.1, 4300.0 to 0.75)
 
         fun pointAt(dm: Double): Triple<Double, Double, Double> {   // x, y, yön (derece)
             val d = ((dm % LOOP_M) + LOOP_M) % LOOP_M
@@ -245,11 +285,20 @@ class DemoWorld {
     fun step(t: Double, speedKmh: Double) {
         val lt = lastT
         val v = speedKmh / 3.6
+        val d0 = dist
         if (lt != null) {
             val dt = t - lt
             dist += v * dt
             gLong = ((speedKmh - lastSpeed) / 3.6 / max(dt, 1e-3)) / VehicleFrame.G
         }
+        // dikey: hızla artan hafif yol titreşimi; bu adımda bir çukurun üzerinden geçildiyse büyük darbe
+        gVert = (0.04 + 0.002 * speedKmh) * (0.7 + 0.3 * abs(sin(t * 7.3)))
+        var hit = 0.0
+        if (dist > d0 && v > 2.0) {
+            val a = ((d0 % LOOP_M) + LOOP_M) % LOOP_M; val b = a + (dist - d0)
+            for ((p, g) in POTHOLES) if ((p in a..b) || (p + LOOP_M in a..b)) hit = max(hit, g * min(1.4, 0.5 + speedKmh / 80))
+        }
+        gVert = max(gVert, hit)
         lastT = t; lastSpeed = speedKmh
         val (x, y, brg) = pointAt(dist)
         lat = LAT0 + y / 111320.0
@@ -261,5 +310,7 @@ class DemoWorld {
         val b1 = pointAt(dist - 6.0).third
         val dpsi = Math.toRadians(((b2 - b1 + 540) % 360) - 180) / 12.0     // rad/m
         gLat = v * v * dpsi / VehicleFrame.G
+        // çukurda yanal eksene küçük sızıntı (medyan süzgeci sonrası gerçekçi düzey)
+        if (hit > 0) gLat += 0.08 * sin(t * 13.0)
     }
 }

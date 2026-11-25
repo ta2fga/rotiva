@@ -5,7 +5,7 @@ import time
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
-from .gear import GearEstimator
+from .gear import GearEstimator, clamp_gear_count
 from .scoring import analyze
 from .trip import TripRecorder
 
@@ -24,7 +24,8 @@ class TripController(QObject):
         super().__init__(state)
         self.state = state
         st = state.settings
-        self.gear = GearEstimator.from_dict(st.get("gear_model"))
+        # kayıtlı modelin vites sayısı ayardan farklıysa öğrenme sıfırdan başlar
+        self.gear = GearEstimator.from_dict(st.get("gear_model"), n=clamp_gear_count(st.get("gear_count", 5)))
         self.rec = TripRecorder(st.get("trip", {}), self.gear)
         self.latest: dict = {}
         self.latest_ts: dict = {}
@@ -52,6 +53,19 @@ class TripController(QObject):
         cfg = dict(self.state.settings.get("trip", {}))
         cfg["auto_start"] = bool(on)
         self.state.settings.put("trip", cfg)
+
+    @property
+    def gear_count(self) -> int:
+        return self.gear.n
+
+    def set_gear_count(self, n: int):
+        """Ayar "Vites sayısı": değişirse vites öğrenmesi sıfırlanır (aynı nesne, kaydedici de onu kullanır)."""
+        n = clamp_gear_count(n)
+        self.state.settings.put("gear_count", n)
+        if self.gear.set_gear_count(n):
+            self._persist_gear(force=True)
+            self.live.update(gear=None, gear_label="—")
+            self.updated.emit()
 
     # --- sürüş
     @property

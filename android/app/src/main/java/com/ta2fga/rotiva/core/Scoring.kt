@@ -27,6 +27,16 @@ data class ScoreCfg(
     val descentGrade: Double = -3.0, val descentMinM: Double = 500.0, val descentBrakeShare: Double = 0.25,
     val descentBrakeMs2: Double = -0.6,
     val cornerG: Double = 0.35,
+    // viraj: sürekli olmalı (2 Hz'de en az 2 ardışık örnek, ≈1 sn kapsama), dikey darbeyle çakışmamalı,
+    // GPS yönü varsa olay çevresinde (±cornerHeadingWinS) en az cornerHeadingDeg derece dönüş olmalı
+    val cornerMinS: Double = 0.8, val cornerMinSamples: Int = 2, val cornerVertMaskG: Double = 0.4,
+    // maske yalnızca yalıtılmış darbeye: çevredeki (±cornerVertLocalS) dikey medyanın en az bu katı olmalı
+    // (sürekli bozuk/parke yolda her örnek "darbe" sayılıp gerçek virajlar maskelenmesin)
+    val cornerVertLocalS: Double = 5.0, val cornerVertLocalK: Double = 1.5,
+    val cornerHeadingDeg: Double = 8.0, val cornerHeadingWinS: Double = 1.5,
+    // çukur / bozuk yol: kısa dikey darbe (yol durumu; sürücü puanını varsayılan olarak etkilemez)
+    val potholeG: Double = 0.6, val potholeMinKmh: Double = 10.0, val potholeMergeS: Double = 1.5,
+    val penPothole: Double = 0.0,
     val penHarshAccel: Double = 9.0, val penHarshBrake: Double = 10.0, val penOverRev: Double = 6.0,
     val penLugging: Double = 5.0, val penLateUp: Double = 3.0, val penEarlyUp: Double = 1.5,
     val penUnstable: Double = 8.0, val penLugUphill: Double = 8.0, val penDescentBrake: Double = 15.0,
@@ -48,7 +58,7 @@ val LABELS = mapOf(
     "early_upshift" to "Erken vites büyütme", "cold_abuse" to "Soğuk motora yüklenme",
     "long_idle" to "Uzun rölanti", "unstable_speed" to "Dengesiz hız",
     "lug_uphill" to "Yokuşta düşük devir", "descent_brake" to "İnişte sürekli fren",
-    "harsh_corner" to "Sert viraj",
+    "harsh_corner" to "Sert viraj", "pothole" to "Çukur / bozuk yol",
 )
 
 data class Event(
@@ -68,7 +78,7 @@ class Metrics(
     var maxUpGrade: Double? = null, var maxDownGrade: Double? = null,
     var pctUp: Double = 0.0, var pctFlat: Double = 0.0, var pctDown: Double = 0.0,
     var longestDescentKm: Double = 0.0, var longestDescentGrade: Double = 0.0,
-    var maxLatG: Double = 0.0, var maxLongG: Double = 0.0,
+    var maxLatG: Double = 0.0, var maxLongG: Double = 0.0, var maxVertG: Double = 0.0,
 )
 
 class ScoreResult(
@@ -126,6 +136,53 @@ fun episodes(S: List<Sample>, flags: BooleanArray, minDur: Double = 0.0, cooldow
         else merged.add(r)
     }
     return merged.filter { S[it[1]].t - S[it[0]].t >= minDur }.map { Episode(it[0], it[1]) }
+}
+
+/**
+ * Yalnızca sürekli bayrak dizilerini bırakır: en az [minSamples] ardışık örnek ve [minS] sn kapsama
+ * (son - ilk zaman + tipik örnek aralığı). Tek örneklik sıçramalar (ör. çukur darbesi) elenir.
+ */
+fun sustained(S: List<Sample>, flags: BooleanArray, minS: Double, minSamples: Int): BooleanArray {
+    val out = BooleanArray(flags.size)
+    val gaps = (1 until S.size).map { S[it].t - S[it - 1].t }.filter { it > 0 }.sorted()
+    val step = if (gaps.isEmpty()) 0.5 else gaps[gaps.size / 2]
+    var i = 0
+    while (i < flags.size) {
+        if (!flags[i]) { i++; continue }
+        var k = i
+        while (k + 1 < flags.size && flags[k + 1]) k++
+        if (k - i + 1 >= minSamples && S[k].t - S[i].t + step >= minS - 1e-9) for (x in i..k) out[x] = true
+        i = k + 1
+    }
+    return out
+}
+
+/** Her örnek için ±[winS] sn içindeki [f] değerlerinin medyanı (değer yoksa 0). */
+fun localMedian(S: List<Sample>, f: (Sample) -> Double?, winS: Double): DoubleArray {
+    val out = DoubleArray(S.size)
+    var lo = 0; var hi = 0
+    for (i in S.indices) {
+        while (S[i].t - S[lo].t > winS) lo++
+        while (hi + 1 < S.size && S[hi + 1].t - S[i].t <= winS) hi++
+        val w = (lo..hi).mapNotNull { f(S[it]) }.sorted()
+        out[i] = if (w.isEmpty()) 0.0 else if (w.size % 2 == 1) w[w.size / 2] else (w[w.size / 2 - 1] + w[w.size / 2]) / 2
+    }
+    return out
+}
+
+/** [a]..[b] olayı çevresinde (±[winS] sn) GPS yönündeki toplam dönüş (derece, mutlak). Yön verisi yoksa null. */
+fun headingChange(S: List<Sample>, a: Int, b: Int, winS: Double, minKmh: Double = 5.0): Double? {
+    val t0 = S[a].t - winS; val t1 = S[b].t + winS
+    var lo = a; while (lo > 0 && S[lo - 1].t >= t0) lo--
+    var hi = b; while (hi < S.size - 1 && S[hi + 1].t <= t1) hi++
+    var prev: Double? = null; var sum = 0.0; var cnt = 0
+    for (x in lo..hi) {
+        val br = S[x].bearing ?: continue
+        if ((S[x].speed ?: 0.0) < minKmh) continue
+        prev?.let { sum += ((br - it + 540) % 360) - 180 }
+        prev = br; cnt++
+    }
+    return if (cnt >= 2) abs(sum) else null
 }
 
 private fun clamp(v: Double) = max(0.0, min(100.0, v))
@@ -278,12 +335,37 @@ fun analyze(input: List<Sample>, cfg: ScoreCfg = DEFAULT_CFG, t0In: Double? = nu
         }
     }
 
-    // --- viraj (yanal ivme)
+    // --- viraj (yanal ivme): sürekli, dikey darbesiz ve (GPS yönü varsa) gerçekten dönülen yerlerde
     if (hasLat) {
-        val cFlags = BooleanArray(n) { i -> S[i].gLat != null && abs(S[i].gLat!!) > cfg.cornerG && (S[i].speed ?: 0.0) > 10 }
+        // dikey darbenin baskın olduğu örnek: yanal değer büyük olasılıkla darbe sızıntısıdır
+        val vLocal = localMedian(S, { it.gVert }, cfg.cornerVertLocalS)
+        val jolt = BooleanArray(n) { i ->
+            val v = S[i].gVert ?: 0.0
+            v >= cfg.cornerVertMaskG && v >= abs(S[i].gLat ?: 0.0) && v >= cfg.cornerVertLocalK * vLocal[i]
+        }
+        val raw = BooleanArray(n) { i ->
+            S[i].gLat != null && abs(S[i].gLat!!) > cfg.cornerG && (S[i].speed ?: 0.0) > 10 && !jolt[i]
+        }
+        val cFlags = sustained(S, raw, cfg.cornerMinS, cfg.cornerMinSamples)
         for (e in episodes(S, cFlags, 0.0, cfg.cooldownS)) {
+            val turn = headingChange(S, e.a, e.b, cfg.cornerHeadingWinS)
+            if (turn != null && turn < cfg.cornerHeadingDeg) continue      // düz yolda yanal sıçrama: viraj değil
             val pk = (e.a..e.b).maxOf { abs(S[it].gLat ?: 0.0) }
-            add("harsh_corner", e.a, pk, "g", "${tr1(pk, 2)} g yanal ivme, ${(S[e.a].speed ?: 0.0).roundToInt()} km/s")
+            val tag = if (turn != null) ", ${turn.roundToInt()}° dönüş" else ""
+            add("harsh_corner", e.a, pk, "g", "${tr1(pk, 2)} g yanal ivme, ${(S[e.a].speed ?: 0.0).roundToInt()} km/s$tag",
+                S[e.b].t - S[e.a].t)
+        }
+    }
+
+    // --- çukur / bozuk yol (dikey darbe); yakın darbeler potholeMergeS içinde birleşir
+    if (S.any { it.gVert != null }) {
+        val pFlags = BooleanArray(n) { i -> (S[i].gVert ?: 0.0) > cfg.potholeG && (S[i].speed ?: 0.0) > cfg.potholeMinKmh }
+        for (e in episodes(S, pFlags, 0.0, cfg.potholeMergeS)) {
+            val i = (e.a..e.b).maxBy { S[it].gVert ?: 0.0 }
+            val pk = S[i].gVert ?: 0.0
+            val d = S[e.b].t - S[e.a].t
+            val what = if (d >= 3.0) "bozuk yol, ${d.roundToInt()} sn" else "dikey darbe"
+            add("pothole", i, pk, "g", "${tr1(pk, 2)} g $what, ${(S[i].speed ?: 0.0).roundToInt()} km/s", d)
         }
     }
 
@@ -330,7 +412,7 @@ fun analyze(input: List<Sample>, cfg: ScoreCfg = DEFAULT_CFG, t0In: Double? = nu
     val moving = (0 until n).filter { acc[it] != null && (S[it].speed ?: 0.0) > 5 }.map { abs(acc[it]!!) }
     val meanAbsA = if (moving.isNotEmpty()) moving.average() else 0.0
     subs["Hız istikrarı / Eko"] = clamp(100 - cfg.penUnstable * c("unstable_speed") / per10 -
-        max(0.0, meanAbsA - cfg.ecoAccelOk) * 40)
+        cfg.penPothole * c("pothole") / per10 - max(0.0, meanAbsA - cfg.ecoAccelOk) * 40)
     subs["Eğim yönetimi"] = clamp(100 - cfg.penLugUphill * c("lug_uphill") / per10 - cfg.penDescentBrake * c("descent_brake"))
     subs["Viraj"] = clamp(100 - cfg.penCorner * c("harsh_corner") / per10)
     val wsum = WEIGHTS.values.sum()
@@ -355,6 +437,7 @@ fun analyze(input: List<Sample>, cfg: ScoreCfg = DEFAULT_CFG, t0In: Double? = nu
     metrics.counts = ev.groupingBy { it.type }.eachCount()
     metrics.maxLatG = S.mapNotNull { it.gLat }.maxOfOrNull { abs(it) } ?: 0.0
     metrics.maxLongG = S.mapNotNull { it.gLong }.maxOfOrNull { abs(it) } ?: 0.0
+    metrics.maxVertG = S.mapNotNull { it.gVert }.maxOfOrNull { abs(it) } ?: 0.0
     terrainMetrics(S, dt, metrics)
 
     return ScoreResult(total.roundToInt(), subs.mapValues { it.value.roundToInt() }, ev.sortedBy { it.t }, metrics,

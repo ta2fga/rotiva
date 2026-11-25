@@ -110,6 +110,46 @@ class TerrainTest {
         assertEquals(-2.0 / g, la2!!, 0.01)
     }
 
+    @Test fun vehicleFrameVerticalJoltAndRobustLateral() {
+        val d = doubleArrayOf(0.0, 0.5, 0.8660254)
+        val f = doubleArrayOf(1.0, 0.0, 0.0)
+        val right = doubleArrayOf(d[1] * f[2] - d[2] * f[1], d[2] * f[0] - d[0] * f[2], d[0] * f[1] - d[1] * f[0])
+        val g = 9.80665
+        fun acc(vf: VehicleFrame, af: Double, ar: Double, av: Double) = vf.onAccel(
+            af * f[0] + ar * right[0] + av * d[0], af * f[1] + ar * right[1] + av * d[1], af * f[2] + ar * right[2] + av * d[2],
+            d[0] * g, d[1] * g, d[2] * g)
+        val vf = VehicleFrame()
+        // kalibrasyon öncesi: dikey değer yine ölçülür, yatay değerler null
+        repeat(10) { acc(vf, 0.0, 0.0, 0.5) }
+        acc(vf, 0.0, 0.0, -7.0)
+        val pre = vf.takeTick()
+        assertNull(pre.long); assertNull(pre.lat)
+        assertEquals(7.0 / g, pre.vert!!, 1e-6)
+        assertTrue(pre.vertRms!! > 0.5 / g)
+        assertTrue(pre.vertJerk!! > 7.0 / g)
+        assertNull(VehicleFrame().takeTick().vert)      // hiç ölçüm yok
+
+        var v = 6.0; var t = 0.0
+        fun feed(af: Double, n: Int) = repeat(n) { acc(vf, af, 0.0, 0.0) }
+        for (k in 0 until 4) { feed(1.5, 50); v += 1.5; t += 1; vf.onSpeed(t, v, 90.0) }
+        for (k in 0 until 3) { feed(-1.5, 50); v -= 1.5; t += 1; vf.onSpeed(t, v, 90.0) }
+        for (k in 0 until 2) { feed(1.5, 50); v += 1.5; t += 1; vf.onSpeed(t, v, 90.0) }
+        assertTrue(vf.calibrated)
+        vf.takeTick()
+        // çukur: 25 ölçümlük aralıkta 2 ölçümlük büyük dikey darbe, yanal eksene sızıntı
+        repeat(12) { acc(vf, 0.0, 0.2, 0.3) }
+        acc(vf, 0.0, 6.0, 12.0); acc(vf, 0.0, -4.0, -9.0)
+        repeat(11) { acc(vf, 0.0, 0.2, 0.3) }
+        val tk = vf.takeTick()
+        assertEquals(0.2 / g, tk.lat!!, 1e-3)              // medyan: sızıntı bastırıldı
+        assertEquals(6.0 / g, tk.latPeak!!, 1e-3)          // ham tepe ayrıca saklanır
+        assertEquals(12.0 / g, tk.vert!!, 1e-3)
+        // sürekli yanal ivme (viraj) medyanda korunur
+        repeat(25) { acc(vf, 0.0, 4.0, 0.2) }
+        val (_, la) = vf.takeTick()
+        assertEquals(4.0 / g, la!!, 1e-3)
+    }
+
     @Test fun vehicleFrameNotCalibratedInCorners() {
         val vf = VehicleFrame()
         var t = 0.0; var b = 0.0

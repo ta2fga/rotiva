@@ -41,6 +41,8 @@ fun coachTips(res: ScoreResult, cfg: ScoreCfg = DEFAULT_CFG, limit: Int = 5, eve
         w("Frenleme", "İnişte $brakeOnDescent kez sert frenleme var. İnişe girmeden vites küçültüp motor freniyle yavaşlayın.")
     }
     c["harsh_corner"]?.let { w("Viraj", "$it virajda yanal ivme ${tr1(cfg.cornerG, 2)} g üzerine çıktı (en yüksek ${tr1(m.maxLatG, 2)} g). Virajlara daha yavaş girin, çıkışta hızlanın.") }
+    // yol durumu: puanı etkilemez (penPothole = 0), düşük öncelikli bilgilendirme
+    c["pothole"]?.let { warn.add(Tip("warn", "$it çukur / bozuk yol darbesi algılandı (en yüksek ${tr1(m.maxVertG, 2)} g). Puanınızı etkilemez; bu yollarda yavaşlamak lastik, jant ve süspansiyonu korur.", 1.0)) }
 
     c["harsh_accel"]?.let { w("Hızlanma", "$it sert kalkış/hızlanma var (> ${tr1(cfg.harshAccelMs2)} m/s²). Gazı kademeli verin; yumuşak hızlanma yakıtı belirgin azaltır.") }
     if (brakeOnDescent == 0) c["harsh_brake"]?.let { w("Frenleme", "$it ani frenleme var. Trafiği ve ışıkları önceden okuyup gazı bırakarak yavaşlayın; fren balatası ve yakıt tasarrufu için.") }

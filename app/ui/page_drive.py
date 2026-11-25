@@ -8,9 +8,10 @@ from PySide6.QtCore import Qt, QTimer, QPointF, QRectF
 from PySide6.QtGui import QPainter, QColor, QPen, QPainterPath
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton, QCheckBox,
                                QTableWidget, QAbstractItemView, QHeaderView, QFrame, QProgressBar, QStackedWidget,
-                               QScrollArea, QFileDialog, QMessageBox)
+                               QScrollArea, QFileDialog, QMessageBox, QComboBox)
 
 from .. import report
+from ..gear import GEAR_COUNTS
 from ..state import AppState
 from ..trip import list_trips, read_samples
 from . import theme
@@ -61,6 +62,7 @@ class TripChart(QWidget):
             y = plot.top() + plot.height() * i / 4
             p.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y))
         S = self.S
+        gmax = max([5] + [s.gear for s in S if s.gear]) + 0.5          # 4..7 vites
         if len(S) < 2:
             p.setPen(QColor(theme.MUTED))
             p.drawText(r, Qt.AlignCenter, "Veri yok")
@@ -70,7 +72,7 @@ class TripChart(QWidget):
         span = max(t1 - t0, 1.0)
         X = lambda t: plot.left() + plot.width() * (t - t0) / span          # noqa: E731
         series = [("Hız (km/s)", lambda s: s.speed, 160.0, 0), ("Devir (d/dk)", lambda s: s.rpm, 4500.0, 1),
-                  ("Vites", lambda s: s.gear, 5.5, 2)]
+                  ("Vites", lambda s: s.gear, gmax, 2)]
         x = plot.left() + 4
         for name, fn, vmax, ci in series:
             col = QColor(theme.SERIES_COLORS[ci])
@@ -164,11 +166,11 @@ class DriveModeView(QWidget):
         L = self.ctl.live
         sp, rpm, gear, sc = L.get("speed"), L.get("rpm"), L.get("gear"), L.get("score")
         self.speed.setText("—" if sp is None else f"{sp:.0f}")
-        self.gear.setText(L.get("gear_label") or "—")     # 1..5, N (boşta/debriyaj) ya da — (bilinmiyor)
+        self.gear.setText(L.get("gear_label") or "—")     # 1..n, N (boşta/debriyaj) ya da — (bilinmiyor)
         col = theme.TEXT if rpm is None or rpm < 3000 else theme.WARN if rpm < 3500 else theme.CRIT
         self.rpm.setStyleSheet(f"font-size:84px;font-weight:700;color:{col};")
         self.rpm.setText("—" if rpm is None else f"{rpm:.0f}")
-        up = gear is not None and gear < 5 and rpm is not None and rpm >= 2500
+        up = gear is not None and gear < self.ctl.gear_count and rpm is not None and rpm >= 2500
         self.hint.setStyleSheet(f"font-size:34px;font-weight:600;color:{theme.WARN};")
         self.hint.setText("▲ Vitesi büyütün" if up else "")
         self.score.setStyleSheet(f"font-size:56px;font-weight:700;color:{score_color(sc)};")
@@ -220,9 +222,16 @@ class DrivePage(QWidget):
         self.auto = QCheckBox("Hız 5 km/s'yi aşınca otomatik başlat")
         self.auto.setChecked(self.ctl.auto_start)
         self.auto.toggled.connect(self.ctl.set_auto_start)
+        self.gears = QComboBox()
+        for k in GEAR_COUNTS:
+            self.gears.addItem(f"{k} ileri", k)
+        self.gears.setCurrentIndex(max(0, self.gears.findData(self.ctl.gear_count)))
+        self.gears.setToolTip("Vites sayısı (ileri). Değiştirince vites öğrenmesi sıfırlanır.")
+        self.gears.currentIndexChanged.connect(self._on_gear_count)
+        gl = QLabel("Vites sayısı:")
         self.info = QLabel("")
         self.info.setObjectName("muted")
-        for w in (self.btn_mode, self.btn_trip, self.auto):
+        for w in (self.btn_mode, self.btn_trip, self.auto, gl, self.gears):
             row.addWidget(w)
         row.addStretch(1)
         row.addWidget(self.info)
@@ -313,6 +322,20 @@ class DrivePage(QWidget):
         self.banner.setStyleSheet(theme.banner_style("warn"))
         self.mode.restyle()
         self._show(self.cur, self.cur_samples)
+
+    # --- ayar: vites sayısı
+    def _on_gear_count(self, _idx: int):
+        n = self.gears.currentData()
+        if n is None or n == self.ctl.gear_count:
+            return
+        ans = QMessageBox.question(self, "Vites sayısı",
+                                   f"Vites sayısı {n} olarak değiştirilsin mi? Vites öğrenmesi sıfırlanır.")
+        if ans == QMessageBox.Yes:
+            self.ctl.set_gear_count(n)
+        else:
+            self.gears.blockSignals(True)
+            self.gears.setCurrentIndex(max(0, self.gears.findData(self.ctl.gear_count)))
+            self.gears.blockSignals(False)
 
     # --- sürüş modu
     def enter_drive_mode(self):
@@ -444,9 +467,9 @@ class DrivePage(QWidget):
                                            if ev else "yok"))
         rt = j.get("ratios")
         if rt:
-            cnt = j.get("gear_counts") or [0] * 5
+            cnt = j.get("gear_counts") or []      # uzunluk oranlarla aynı olmayabilir: eksik = tahmin
             self.ratio_lbl.setText("Vites oranları (km/s / 1000 d/dk): " + ", ".join(
-                f"{i + 1}. {r:.1f}{'' if cnt[i] >= 40 else ' (tahmin)'}" for i, r in enumerate(rt)))
+                f"{i + 1}. {r:.1f}{'' if i < len(cnt) and cnt[i] >= 40 else ' (tahmin)'}" for i, r in enumerate(rt)))
         self.btn_html.setEnabled(True)
 
     def export_html(self):

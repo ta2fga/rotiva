@@ -5,6 +5,8 @@ import android.content.SharedPreferences
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import com.ta2fga.rotiva.core.ConnectHint
+import com.ta2fga.rotiva.core.DEFAULT_GEAR_COUNT
+import com.ta2fga.rotiva.core.clampGearCount
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -37,9 +39,19 @@ class Prefs(ctx: Context) {
     fun setDashboard(v: List<String>) { _dashboard.value = v; sp.edit().putString("dashboard", v.joinToString(",")).apply() }
     fun togglePin(key: String) = setDashboard(if (key in _dashboard.value) _dashboard.value - key else _dashboard.value + key)
 
+    /** İleri vites sayısı (4..7). Değişince vites öğrenmesi sıfırlanır (bkz. Engine.setGearCount). */
+    private val _gearCount = MutableStateFlow(clampGearCount(sp.getInt("gear_count", DEFAULT_GEAR_COUNT)))
+    val gearCount: StateFlow<Int> = _gearCount
+    fun setGearCount(v: Int) { val k = clampGearCount(v); _gearCount.value = k; sp.edit().putInt("gear_count", k).apply() }
+
     var gearJson: JSONObject?
         get() = sp.getString("gear", null)?.let { runCatching { JSONObject(it) }.getOrNull() }
         set(v) { sp.edit().putString("gear", v?.toString()).apply() }
+
+    /** Rapor hız grafiğinde görünen seriler (encodeSeries biçimi); raporlar arasında korunur. */
+    var speedChartSeries: String?
+        get() = sp.getString("speed_chart_series", null)
+        set(v) { sp.edit().putString("speed_chart_series", v).apply() }
 
     var lastDevice: String?
         get() = sp.getString("last_device", null)

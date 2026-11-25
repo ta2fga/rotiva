@@ -1,7 +1,9 @@
 package com.ta2fga.rotiva.ui
 
 import android.content.Context
-import android.graphics.Color as AColor
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
+import android.graphics.Paint
 import android.graphics.drawable.GradientDrawable
 import android.view.MotionEvent
 import androidx.compose.foundation.background
@@ -49,8 +51,21 @@ fun initOsm(ctx: Context) {
     c.tileFileSystemCacheTrimBytes = 80L * 1024 * 1024
 }
 
-private val SPEED_COLORS = intArrayOf(0xFF22C55E.toInt(), 0xFF84CC16.toInt(), 0xFFEAB308.toInt(), 0xFFF97316.toInt(), 0xFFEF4444.toInt())
-private val GRADE_COLORS = intArrayOf(0xFF2563EB.toInt(), 0xFF60A5FA.toInt(), 0xFF22C55E.toInt(), 0xFFF97316.toInt(), 0xFFEF4444.toInt())
+// Mapnik altlığı yeşil/sarı/pembe/açık tonlarla dolu: rota koyu bir "kılıf" üzerine,
+// harita renklerinden ayrışan doygun ve algısal olarak sıralı renklerle çizilir.
+/** Hız: koyu mavi → camgöbeği → sarı → turuncu → koyu kırmızı/macenta. */
+internal val SPEED_COLORS = intArrayOf(
+    0xFF2B3FD6.toInt(), 0xFF00B8D9.toInt(), 0xFFFFE014.toInt(), 0xFFFF7A00.toInt(), 0xFFD1005E.toInt(),
+)
+/** Eğim (ıraksak): koyu mavi (iniş) ↔ açık gri/beyaz (düz) ↔ koyu kırmızı (yokuş). */
+internal val GRADE_COLORS = intArrayOf(
+    0xFF1440B8.toInt(), 0xFF5B9CF2.toInt(), 0xFFF2F2F2.toInt(), 0xFFF26B3A.toInt(), 0xFFB0101E.toInt(),
+)
+internal const val PLAIN_COLOR = 0xFF0050FF.toInt()
+/** Rota ve işaretlerin altındaki koyu kılıf/kontur. */
+internal const val CASING_COLOR = 0xF0101418.toInt()
+private const val LINE_DP = 4.5f
+private const val CASING_DP = 7.5f
 
 fun speedBucket(v: Double?): Int = when { v == null -> 0; v < 30 -> 0; v < 60 -> 1; v < 90 -> 2; v < 120 -> 3; else -> 4 }
 fun gradeBucket(g: Double?): Int = when { g == null -> 2; g < -6 -> 0; g < -2 -> 1; g <= 2 -> 2; g <= 6 -> 3; else -> 4 }
@@ -63,36 +78,73 @@ fun legendFor(mode: RouteColor): List<Pair<String, Int>> = when (mode) {
         .map { it.first to GRADE_COLORS[it.second] }
 }
 
-private fun dot(color: Int, sizePx: Int, stroke: Int = AColor.WHITE) = GradientDrawable().apply {
-    shape = GradientDrawable.OVAL; setColor(color); setStroke(4, stroke); setSize(sizePx, sizePx)
+/** Haritada rota rengi (lejantla aynı paletten). */
+fun routeColorOf(mode: RouteColor, speed: Double?, grade: Double?): Int = when (mode) {
+    RouteColor.PLAIN -> PLAIN_COLOR
+    RouteColor.SPEED -> SPEED_COLORS[speedBucket(speed)]
+    RouteColor.GRADE -> GRADE_COLORS[gradeBucket(grade)]
 }
 
-private val EVENT_STYLE = mapOf(
-    "harsh_brake" to ("Sert fren" to 0xFFEF4444.toInt()),
-    "harsh_accel" to ("Sert hızlanma" to 0xFFF97316.toInt()),
-    "harsh_corner" to ("Sert viraj" to 0xFFA855F7.toInt()),
-    "lugging" to ("Motoru zorlama" to 0xFFEAB308.toInt()),
-    "lug_uphill" to ("Motoru zorlama" to 0xFFEAB308.toInt()),
-)
+enum class MarkerShape { DOT, SQUARE }
+data class EventStyle(val label: String, val color: Int, val shape: MarkerShape = MarkerShape.DOT)
 
-private fun rebuild(map: MapView, r: TripReport, mode: RouteColor, cursorMarker: Marker, first: Boolean) {
+/** Olay türü → işaret stili. core/Scoring.kt LABELS'taki tüm türler + "pothole". */
+internal val EVENT_STYLE: Map<String, EventStyle> = mapOf(
+    "harsh_brake" to EventStyle("Sert fren", 0xFFE11D48.toInt()),
+    "harsh_accel" to EventStyle("Sert hızlanma", 0xFFFF8A00.toInt()),
+    "harsh_corner" to EventStyle("Sert viraj", 0xFF9333EA.toInt()),
+    "over_rev" to EventStyle("Yüksek devir", 0xFFFF2BD6.toInt()),
+    "lugging" to EventStyle("Motoru zorlama", 0xFFFACC15.toInt()),
+    "lug_uphill" to EventStyle("Yokuşta düşük devir", 0xFFFACC15.toInt()),
+    "late_upshift" to EventStyle("Geç vites büyütme", 0xFF14B8A6.toInt()),
+    "early_upshift" to EventStyle("Erken vites büyütme", 0xFF5EEAD4.toInt()),
+    "cold_abuse" to EventStyle("Soğuk motora yüklenme", 0xFF38BDF8.toInt()),
+    "long_idle" to EventStyle("Uzun rölanti", 0xFF9CA3AF.toInt()),
+    "unstable_speed" to EventStyle("Dengesiz hız", 0xFF84CC16.toInt()),
+    "descent_brake" to EventStyle("İnişte sürekli fren", 0xFF7F1D1D.toInt()),
+    "pothole" to EventStyle("Çukur", 0xFF8B4513.toInt(), MarkerShape.SQUARE),
+)
+internal const val FALLBACK_EVENT_COLOR = 0xFFE5E7EB.toInt()
+
+/** Bilinmeyen türler sessizce düşürülmez: olayın kendi etiketiyle nötr bir işaret. */
+fun eventStyleFor(type: String, label: String?): EventStyle =
+    EVENT_STYLE[type] ?: EventStyle(label?.takeIf { it.isNotBlank() } ?: type, FALLBACK_EVENT_COLOR)
+
+private fun markerIcon(color: Int, sizePx: Int, strokePx: Int, shape: MarkerShape = MarkerShape.DOT) = GradientDrawable().apply {
+    if (shape == MarkerShape.SQUARE) { this.shape = GradientDrawable.RECTANGLE; cornerRadius = sizePx * 0.18f }
+    else this.shape = GradientDrawable.OVAL
+    setColor(color); setStroke(strokePx, CASING_COLOR); setSize(sizePx, sizePx)
+}
+
+/** Altlığı hafifçe soldur/karart: rota öne çıksın, harita okunur kalsın. */
+private fun mutedTiles() = ColorMatrixColorFilter(ColorMatrix().apply {
+    setSaturation(0.45f)
+    postConcat(ColorMatrix().apply { setScale(0.94f, 0.94f, 0.94f, 1f) })
+})
+
+private fun rebuild(map: MapView, r: TripReport, mode: RouteColor, showEvents: Boolean, cursorMarker: Marker, first: Boolean) {
     map.overlays.clear()
     val pts = r.track.filter { it.lat != null && it.lon != null }
     if (pts.size < 2) return
+    val d = map.resources.displayMetrics.density
+    val geo = pts.map { GeoPoint(it.lat!!, it.lon!!) }
+    // önce tüm rotanın altına tek parça koyu kılıf
+    map.overlays.add(Polyline().apply {
+        setPoints(geo)
+        outlinePaint.color = CASING_COLOR; outlinePaint.strokeWidth = CASING_DP * d
+        outlinePaint.strokeCap = Paint.Cap.ROUND; outlinePaint.strokeJoin = Paint.Join.ROUND
+        setOnClickListener { _, _, _ -> false }
+    })
     // rota: aynı renk kümesindeki ardışık parçalar tek çizgi
-    fun colorOf(i: Int): Int = when (mode) {
-        RouteColor.PLAIN -> 0xFF3B82F6.toInt()
-        RouteColor.SPEED -> SPEED_COLORS[speedBucket(pts[i].speed)]
-        RouteColor.GRADE -> GRADE_COLORS[gradeBucket(pts[i].grade)]
-    }
+    val colors = IntArray(pts.size) { routeColorOf(mode, pts[it].speed, pts[it].grade) }
     var runStart = 0
     for (i in 1..pts.size) {
-        if (i == pts.size || colorOf(i) != colorOf(runStart)) {
+        if (i == pts.size || colors[i] != colors[runStart]) {
             val end = if (i == pts.size) pts.size - 1 else i
             val line = Polyline().apply {
-                setPoints((runStart..end).map { GeoPoint(pts[it].lat!!, pts[it].lon!!) })
-                outlinePaint.color = colorOf(runStart); outlinePaint.strokeWidth = 10f
-                outlinePaint.strokeCap = android.graphics.Paint.Cap.ROUND
+                setPoints(geo.subList(runStart, end + 1))
+                outlinePaint.color = colors[runStart]; outlinePaint.strokeWidth = LINE_DP * d
+                outlinePaint.strokeCap = Paint.Cap.ROUND; outlinePaint.strokeJoin = Paint.Join.ROUND
                 setOnClickListener { _, _, _ -> false }
             }
             map.overlays.add(line)
@@ -100,19 +152,20 @@ private fun rebuild(map: MapView, r: TripReport, mode: RouteColor, cursorMarker:
             if (i == pts.size) break
         }
     }
-    fun marker(p: GeoPoint, color: Int, size: Int, title: String?, snippet: String?) = Marker(map).apply {
-        position = p; icon = dot(color, size); setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+    val stroke = (2.5f * d).toInt().coerceAtLeast(2)
+    fun marker(p: GeoPoint, icon: GradientDrawable, title: String?, snippet: String?) = Marker(map).apply {
+        position = p; this.icon = icon; setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
         this.title = title; this.snippet = snippet
     }
-    for (ep in r.eventPositions) {
-        val st = EVENT_STYLE[ep.event.type] ?: continue
-        map.overlays.add(marker(GeoPoint(ep.lat, ep.lon), st.second, 30, st.first, "${ep.event.text} · ${com.ta2fga.rotiva.core.fmtDuration(ep.event.t)}"))
+    if (showEvents) for (ep in r.eventPositions) {
+        val st = eventStyleFor(ep.event.type, ep.event.label)
+        map.overlays.add(marker(GeoPoint(ep.lat, ep.lon), markerIcon(st.color, (13 * d).toInt(), stroke, st.shape),
+            st.label, "${ep.event.text} · ${com.ta2fga.rotiva.core.fmtDuration(ep.event.t)}"))
     }
-    map.overlays.add(marker(GeoPoint(pts.first().lat!!, pts.first().lon!!), 0xFF22C55E.toInt(), 44, "Başlangıç", null))
-    map.overlays.add(marker(GeoPoint(pts.last().lat!!, pts.last().lon!!), 0xFFEF4444.toInt(), 44, "Bitiş", null))
+    map.overlays.add(marker(geo.first(), markerIcon(0xFF16A34A.toInt(), (18 * d).toInt(), (3 * d).toInt()), "Başlangıç", null))
+    map.overlays.add(marker(geo.last(), markerIcon(0xFFDC2626.toInt(), (18 * d).toInt(), (3 * d).toInt()), "Bitiş", null))
     map.overlays.add(cursorMarker)
     if (first) {
-        val geo = pts.map { GeoPoint(it.lat!!, it.lon!!) }
         var box = BoundingBox.fromGeoPoints(geo)
         if (box.latNorth - box.latSouth < 1e-4 || box.lonEast - box.lonWest < 1e-4) {
             box = BoundingBox(box.latNorth + 0.002, box.lonEast + 0.002, box.latSouth - 0.002, box.lonWest - 0.002)
@@ -123,9 +176,9 @@ private fun rebuild(map: MapView, r: TripReport, mode: RouteColor, cursorMarker:
     map.invalidate()
 }
 
-/** OSM haritası: rota (hız/eğim renkli), başlangıç/bitiş, olay işaretleri ve grafik imleci. */
+/** OSM haritası: rota (hız/eğim renkli), başlangıç/bitiş, olay işaretleri (isteğe bağlı) ve grafik imleci. */
 @Composable
-fun RouteMap(r: TripReport, mode: RouteColor, cursor: Int?, modifier: Modifier = Modifier) {
+fun RouteMap(r: TripReport, mode: RouteColor, cursor: Int?, modifier: Modifier = Modifier, showEvents: Boolean = true) {
     val ctx = LocalContext.current
     val map = remember {
         MapView(ctx).apply {
@@ -134,6 +187,7 @@ fun RouteMap(r: TripReport, mode: RouteColor, cursor: Int?, modifier: Modifier =
             zoomController.setVisibility(CustomZoomButtonsController.Visibility.SHOW_AND_FADEOUT)
             minZoomLevel = 3.0; maxZoomLevel = 19.0
             isTilesScaledToDpi = true
+            overlayManager.tilesOverlay.setColorFilter(mutedTiles())
             // kaydırılabilir rapor içinde: dokunurken üst öğenin müdahalesini engelle
             setOnTouchListener { v, e ->
                 when (e.actionMasked) {
@@ -146,7 +200,8 @@ fun RouteMap(r: TripReport, mode: RouteColor, cursor: Int?, modifier: Modifier =
     }
     val cursorMarker = remember {
         Marker(map).apply {
-            icon = dot(0xFF0EA5E9.toInt(), 36); setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+            val d = ctx.resources.displayMetrics.density
+            icon = markerIcon(0xFF00E5FF.toInt(), (15 * d).toInt(), (3 * d).toInt()); setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
             isEnabled = false; title = "İmleç"
         }
     }
@@ -160,7 +215,8 @@ fun RouteMap(r: TripReport, mode: RouteColor, cursor: Int?, modifier: Modifier =
         map.onResume()
         onDispose { owner.lifecycle.removeObserver(obs); map.onPause(); map.onDetach() }
     }
-    LaunchedEffect(r, mode) { rebuild(map, r, mode, cursorMarker, !built[0]); built[0] = true }
+    // geçişlerde yeniden çiz ama yeniden yakınlaştırma (ilk kurulumda bir kez)
+    LaunchedEffect(r, mode, showEvents) { rebuild(map, r, mode, showEvents, cursorMarker, !built[0]); built[0] = true }
     LaunchedEffect(cursor, r) {
         val p = cursor?.let { r.track.getOrNull(it) }
         if (p?.lat != null && p.lon != null) { cursorMarker.position = GeoPoint(p.lat!!, p.lon!!); cursorMarker.isEnabled = true }

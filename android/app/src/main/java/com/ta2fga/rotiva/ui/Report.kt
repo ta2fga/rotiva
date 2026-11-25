@@ -13,10 +13,16 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -27,6 +33,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -87,7 +94,13 @@ fun ReportBody(r: TripReport, ctx: Context) {
     var cursor by remember { mutableStateOf<Int?>(null) }
     var routeMode by remember { mutableStateOf(RouteColor.SPEED) }
     var fullscreen by remember { mutableStateOf(false) }
-    if (fullscreen) FullscreenMap(r, routeMode, { routeMode = it }, cursor) { fullscreen = false }
+    var showEvents by rememberSaveable { mutableStateOf(true) }
+    // hız grafiği serileri: döndürmede korunur, son seçim Prefs'e yazılır (sonraki raporlar da aynı açılır)
+    var speedSeriesRaw by rememberSaveable {
+        mutableStateOf(encodeSeries(decodeSeries(runCatching { Engine.prefs.speedChartSeries }.getOrNull())))
+    }
+    val speedSeries = decodeSeries(speedSeriesRaw)
+    if (fullscreen) FullscreenMap(r, routeMode, { routeMode = it }, showEvents, { showEvents = it }, cursor) { fullscreen = false }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("${fmtDate(r.startTs)} - ${fmtDate(r.endTs)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
         AppCard(Modifier.fillMaxWidth()) {
@@ -135,18 +148,23 @@ fun ReportBody(r: TripReport, ctx: Context) {
         if (r.track.size >= 2) {
             SectionTitle("Hız, devir ve vites (zamana göre)")
             AppCard(Modifier.fillMaxWidth()) {
-                ProfileChart(r, ChartKind.SPEED, cursor, { cursor = it }, ex.series[0], ex.series[2], ex.series[1], ex.crit, ex.border,
-                    MaterialTheme.colorScheme.onSurfaceVariant, Modifier.fillMaxWidth().height(230.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(top = 4.dp)) {
-                    Legend("Hız", ex.series[0]); Legend("Devir (0-4000+)", ex.series[2]); Legend("Vites (0-6)", ex.series[1]); Legend("Olay", ex.crit)
+                val available = remember(r) { seriesWithData(r.track) }
+                val shown = effectiveSeries(speedSeries, available)
+                SeriesChips(shown, available, mapOf(SpeedSeries.SPEED to ex.series[0], SpeedSeries.RPM to ex.series[2],
+                    SpeedSeries.GEAR to ex.series[1]), ex.crit) { s ->
+                    val v = encodeSeries(toggleSelected(speedSeries, available, s))
+                    speedSeriesRaw = v
+                    runCatching { Engine.prefs.speedChartSeries = v }
                 }
+                ProfileChart(r, ChartKind.SPEED, cursor, { cursor = it }, ex.series[0], ex.series[2], ex.series[1], ex.crit, ex.border,
+                    MaterialTheme.colorScheme.onSurfaceVariant, Modifier.fillMaxWidth().height(230.dp), shown)
             }
         }
         if (r.track.count { it.lat != null } >= 2) {
             SectionTitle("Rota (OpenStreetMap)")
             AppCard(Modifier.fillMaxWidth()) {
-                RouteControls(routeMode, { routeMode = it }, onFullscreen = { fullscreen = true })
-                RouteMap(r, routeMode, cursor, Modifier.fillMaxWidth().height(300.dp))
+                RouteControls(routeMode, { routeMode = it }, showEvents, { showEvents = it }, onFullscreen = { fullscreen = true })
+                RouteMap(r, routeMode, cursor, Modifier.fillMaxWidth().height(300.dp), showEvents)
             }
         }
         SectionTitle("Olaylar")
@@ -182,9 +200,43 @@ fun Legend(t: String, c: Color) {
     }
 }
 
+/**
+ * Hız grafiği seri seçicisi: her çip serinin renginde (lejant görevi de görür). Seçili çipte onay işareti,
+ * seçili olmayanda soluk renk noktası. Son seçili seri kapatılamaz (bkz. [toggleSeries]).
+ */
+@Composable
+fun SeriesChips(visible: Set<SpeedSeries>, available: Set<SpeedSeries>, colors: Map<SpeedSeries, Color>, evC: Color,
+                onToggle: (SpeedSeries) -> Unit) {
+    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        SpeedSeries.values().forEach { s ->
+            val c = colors[s] ?: MaterialTheme.colorScheme.primary
+            val on = s in visible
+            val has = s in available   // bu sürüşte verisi yoksa çip devre dışı
+            FilterChip(
+                selected = on, onClick = { onToggle(s) }, enabled = has,
+                label = { Text(if (has) s.label else "${s.label} (veri yok)",
+                    color = if (on) c else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (has) 1f else 0.5f),
+                    fontWeight = FontWeight.SemiBold) },
+                leadingIcon = {
+                    if (on) Icon(Icons.Filled.Check, contentDescription = null, tint = c, modifier = Modifier.size(FilterChipDefaults.IconSize))
+                    else Canvas(Modifier.size(10.dp)) { drawCircle(c.copy(alpha = 0.45f)) }
+                },
+                colors = FilterChipDefaults.filterChipColors(selectedContainerColor = c.copy(alpha = 0.16f)),
+                border = FilterChipDefaults.filterChipBorder(enabled = has, selected = on,
+                    borderColor = c.copy(alpha = 0.5f), selectedBorderColor = c, selectedBorderWidth = 1.dp),
+            )
+        }
+        Legend("Olay", evC)
+    }
+}
 
 @Composable
-fun RouteControls(mode: RouteColor, onMode: (RouteColor) -> Unit, onFullscreen: (() -> Unit)?) {
+fun RouteControls(
+    mode: RouteColor, onMode: (RouteColor) -> Unit,
+    showEvents: Boolean, onShowEvents: (Boolean) -> Unit,
+    onFullscreen: (() -> Unit)?,
+) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
         RouteColor.values().forEach { m ->
             if (m == mode) Button(onClick = { onMode(m) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp)) { Text(m.label) }
@@ -194,13 +246,38 @@ fun RouteControls(mode: RouteColor, onMode: (RouteColor) -> Unit, onFullscreen: 
         if (onFullscreen != null) TextButton(onClick = onFullscreen) { Text("Tam ekran") }
     }
     val lg = legendFor(mode)
-    if (lg.isNotEmpty()) Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        lg.forEach { (t, c) -> Legend(t, Color(c)) }
+    // "Olaylar" anahtarı + lejant; dar ekranda yatay kaydırılır
+    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        FilterChip(
+            selected = showEvents, onClick = { onShowEvents(!showEvents) },
+            label = { Text("Olaylar") },
+            leadingIcon = if (showEvents) {
+                { Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(FilterChipDefaults.IconSize)) }
+            } else null,
+        )
+        lg.forEach { (t, c) -> RouteLegend(t, Color(c)) }
+    }
+}
+
+/** Rota lejantı: açık renkler (ör. "düz" beyazı) seçilebilsin diye haritadaki gibi koyu konturlu. */
+@Composable
+private fun RouteLegend(t: String, c: Color) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Canvas(Modifier.size(12.dp)) {
+            drawCircle(Color(CASING_COLOR))
+            drawCircle(c, radius = size.minDimension / 2 - 2.dp.toPx())
+        }
+        Text(" $t", style = MaterialTheme.typography.bodySmall)
     }
 }
 
 @Composable
-fun FullscreenMap(r: TripReport, mode: RouteColor, onMode: (RouteColor) -> Unit, cursor: Int?, onClose: () -> Unit) {
+fun FullscreenMap(
+    r: TripReport, mode: RouteColor, onMode: (RouteColor) -> Unit,
+    showEvents: Boolean, onShowEvents: (Boolean) -> Unit,
+    cursor: Int?, onClose: () -> Unit,
+) {
     androidx.compose.ui.window.Dialog(
         onDismissRequest = onClose,
         properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
@@ -208,10 +285,10 @@ fun FullscreenMap(r: TripReport, mode: RouteColor, onMode: (RouteColor) -> Unit,
         androidx.compose.material3.Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             Column(Modifier.fillMaxSize().padding(top = 28.dp, bottom = 12.dp).padding(horizontal = 8.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.weight(1f)) { RouteControls(mode, onMode, null) }
+                    Box(Modifier.weight(1f)) { Column { RouteControls(mode, onMode, showEvents, onShowEvents, null) } }
                     Button(onClick = onClose) { Text("Kapat") }
                 }
-                RouteMap(r, mode, cursor, Modifier.fillMaxWidth().weight(1f))
+                RouteMap(r, mode, cursor, Modifier.fillMaxWidth().weight(1f), showEvents)
             }
         }
     }

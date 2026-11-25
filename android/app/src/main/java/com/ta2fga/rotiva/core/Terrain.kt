@@ -27,7 +27,8 @@ data class Sample(
     var acc: Double? = null,            // yatay konum doğruluğu, m
     var baroAlt: Double? = null,
     var gLong: Double? = null,          // boylamasına ivme, g (+ hızlanma)
-    var gLat: Double? = null,           // yanal ivme, g (+ sağa)
+    var gLat: Double? = null,           // yanal ivme, g (+ sağa); örnek aralığının medyanı (darbelere dayanıklı)
+    var gVert: Double? = null,          // dikey darbe, g: örnek aralığında yerçekimi eksenindeki en büyük |ivme|
     // analiz sırasında türetilir:
     var grade: Double? = null,          // eğim %
     var dist: Double = 0.0,             // kümülatif mesafe, m
@@ -174,8 +175,24 @@ class VehicleFrame {
     private var lastBearing: Double? = null
 
     private var tickLongSum = 0.0; private var tickN = 0; private var tickLatPeak = 0.0
+    private var tickLat = DoubleArray(64); private var tickLatN = 0
+    private var tickVertPeak = 0.0; private var tickVertSq = 0.0; private var tickVertN = 0
+    private var tickJerkPeak = 0.0; private var lastDot: Double? = null
     var lastLong: Double? = null; private set
     var lastLat: Double? = null; private set
+    var lastVert: Double? = null; private set
+
+    /**
+     * Bir örnekleme aralığının özeti (g).
+     *  - [long]: boyuna ortalama; [lat]: yanal medyan (kısa darbe sızıntısını bastırır); [latPeak]: ham yanal tepe.
+     *  - [vert]: yerçekimi eksenindeki en büyük |doğrusal ivme| (çukur/kasis darbesi), [vertRms]: dikey RMS,
+     *    [vertJerk]: ardışık ölçümler arası en büyük dikey değişim (g/ölçüm). Dikey değerler kalibrasyon gerektirmez.
+     * Kalibre değilse long/lat/latPeak null; ivme verisi hiç gelmediyse dikey değerler de null.
+     */
+    data class Tick(
+        val long: Double?, val lat: Double?, val latPeak: Double? = null,
+        val vert: Double? = null, val vertRms: Double? = null, val vertJerk: Double? = null,
+    )
 
     private fun fwd(): DoubleArray {
         val m = sqrt(ax * ax + ay * ay + az * az)
@@ -190,10 +207,21 @@ class VehicleFrame {
         val dot = lx * dx + ly * dy + lz * dz
         val hx = lx - dot * dx; val hy = ly - dot * dy; val hz = lz - dot * dz
         sx += hx; sy += hy; sz += hz; n++
+        // dikey (yerçekimi ekseni) darbe: tepe, RMS ve sarsıntı (jerk)
+        val vg = dot / G
+        if (abs(vg) > tickVertPeak) tickVertPeak = abs(vg)
+        tickVertSq += vg * vg; tickVertN++
+        lastDot?.let { val j = abs(vg - it); if (j > tickJerkPeak) tickJerkPeak = j }
+        lastDot = vg
         if (calibrated) {
             val (l, t) = project(hx, hy, hz)
             tickLongSum += l; tickN++
             if (abs(t) > abs(tickLatPeak)) tickLatPeak = t
+            if (tickLatN == tickLat.size) {
+                if (tickLat.size < MAX_TICK_SAMPLES) tickLat = tickLat.copyOf(tickLat.size * 2)
+                else { System.arraycopy(tickLat, 1, tickLat, 0, tickLat.size - 1); tickLatN-- }   // en eskiyi at
+            }
+            tickLat[tickLatN++] = t
         }
     }
 
@@ -233,17 +261,36 @@ class VehicleFrame {
         lastV = vMs; lastT = t; lastBearing = bearingDeg
     }
 
-    /** Son örnekleme aralığı için (boyuna ortalama, yanal tepe) g; sayaçları sıfırlar. Kalibre değilse (null, null). */
-    fun takeTick(): Pair<Double?, Double?> {
-        if (!calibrated || tickN == 0) { tickLongSum = 0.0; tickN = 0; tickLatPeak = 0.0; return null to null }
-        val l = tickLongSum / tickN
-        val t = tickLatPeak
-        tickLongSum = 0.0; tickN = 0; tickLatPeak = 0.0
-        lastLong = l; lastLat = t
-        return l to t
+    /**
+     * Son örnekleme aralığının özeti ([Tick]); sayaçları sıfırlar. `val (long, lat) = takeTick()` biçimi eskisi gibi
+     * çalışır; yanal değer artık ham tepe değil medyandır (çukur darbesi tek başına viraj sayılmasın diye).
+     */
+    fun takeTick(): Tick {
+        val vert = if (tickVertN > 0) tickVertPeak else null
+        val vertRms = if (tickVertN > 0) sqrt(tickVertSq / tickVertN) else null
+        val jerk = if (tickVertN > 1) tickJerkPeak else null
+        val out = if (!calibrated || tickN == 0) Tick(null, null, null, vert, vertRms, jerk)
+        else {
+            val l = tickLongSum / tickN
+            val med = median(tickLat, tickLatN)
+            lastLong = l; lastLat = med
+            Tick(l, med, tickLatPeak, vert, vertRms, jerk)
+        }
+        lastVert = vert
+        tickLongSum = 0.0; tickN = 0; tickLatPeak = 0.0; tickLatN = 0
+        tickVertPeak = 0.0; tickVertSq = 0.0; tickVertN = 0; tickJerkPeak = 0.0
+        return out
     }
 
-    companion object { const val G = 9.80665 }
+    companion object {
+        const val G = 9.80665
+        private const val MAX_TICK_SAMPLES = 1024
+        private fun median(a: DoubleArray, n: Int): Double? {
+            if (n == 0) return null
+            val c = a.copyOf(n); c.sort()
+            return if (n % 2 == 1) c[n / 2] else (c[n / 2 - 1] + c[n / 2]) / 2
+        }
+    }
 }
 
 /** Merkezkaç tahmini: yanal ivme ≈ hız × yönelme hızı (kalibrasyon yokken yedek). g cinsinden, + sağa. */

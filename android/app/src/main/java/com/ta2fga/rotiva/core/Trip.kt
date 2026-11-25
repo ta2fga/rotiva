@@ -17,7 +17,7 @@ class TripCfg(
 )
 
 val FIELDS = listOf("t", "rpm", "speed", "load", "coolant", "map", "maf", "frp", "gear", "lat", "lon", "gpsSpeed",
-    "bearing", "alt", "acc", "baroAlt", "gLong", "gLat")
+    "bearing", "alt", "acc", "baroAlt", "gLong", "gLat", "gVert")   // eski CSV'lerde gVert yoktur -> null
 
 private fun fmt(v: Double?, d: Int = 3): String = if (v == null || v.isNaN()) "" else if (d == 7) "%.7f".format(Locale.US, v) else "%.${d}f".format(Locale.US, v)
 
@@ -25,13 +25,15 @@ fun sampleToCsv(s: Sample): String = listOf(
     "%.2f".format(Locale.US, s.t), fmt(s.rpm, 1), fmt(s.speed, 2), fmt(s.load, 1), fmt(s.coolant, 1), fmt(s.map, 1),
     fmt(s.maf, 2), fmt(s.frp, 1), s.gear?.toString() ?: "", fmt(s.lat, 7), fmt(s.lon, 7), fmt(s.gpsSpeed, 2),
     fmt(s.bearing, 1), fmt(s.alt, 2), fmt(s.acc, 1), fmt(s.baroAlt, 2), fmt(s.gLong, 4), fmt(s.gLat, 4),
+    fmt(s.gVert, 3),
 ).joinToString(",")
 
 fun sampleFromCsv(cols: List<String>, idx: Map<String, Int>): Sample? {
     fun d(k: String): Double? = idx[k]?.let { cols.getOrNull(it) }?.takeIf { it.isNotEmpty() }?.toDoubleOrNull()
     val t = d("t") ?: return null
     return Sample(t, d("rpm"), d("speed"), d("load"), d("coolant"), d("map"), d("maf"), d("frp"), d("gear")?.toInt(),
-        d("lat"), d("lon"), d("gpsSpeed"), d("bearing"), d("alt"), d("acc"), d("baroAlt"), d("gLong"), d("gLat"))
+        d("lat"), d("lon"), d("gpsSpeed"), d("bearing"), d("alt"), d("acc"), d("baroAlt"), d("gLong"), d("gLat"),
+        d("gVert"))
 }
 
 fun readSamples(f: File): List<Sample> {
@@ -192,6 +194,7 @@ class TripRecorder(
 fun buildSummary(id: String, S: List<Sample>, res: ScoreResult, pauses: List<Pair<Double, Double>>, gear: GearEstimator): JSONObject {
     val m = res.metrics
     val tips = coachTips(res)
+    val (gr, gc) = gear.snapshot()          // aynı uzunlukta (kayıt sırasında vites sayısı değişebilir)
     return JSONObject()
         .put("id", id).put("start_ts", S.first().t).put("end_ts", S.last().t)
         .put("pauses", JSONArray(pauses.map { JSONArray(listOf(it.first, it.second)) }))
@@ -207,6 +210,6 @@ fun buildSummary(id: String, S: List<Sample>, res: ScoreResult, pauses: List<Pai
             .put("max_speed", m.maxSpeed).put("ascent", m.ascent).put("descent", m.descent)
             .put("has_altitude", m.hasAltitude).put("max_alt", m.maxAlt ?: JSONObject.NULL)
             .put("min_alt", m.minAlt ?: JSONObject.NULL))
-        .put("ratios", JSONArray(gear.ratios.map { Math.round(it * 100) / 100.0 }))
-        .put("gear_counts", JSONArray(gear.counts.toList()))
+        .put("ratios", JSONArray(gr.map { Math.round(it * 100) / 100.0 }))
+        .put("gear_counts", JSONArray(gc.toList()))
 }
